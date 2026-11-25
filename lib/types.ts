@@ -310,6 +310,8 @@ export interface InternalIntelItem {
 }
 
 export interface BriefContent {
+  /** Short provider messages explaining any market series that could not be fetched. */
+  market_data_notes?: string[]
   /** How many insight items carry a verified source link (set at generation time). */
   citation_stats?: { items: number; cited: number; removed: number }
   headline: string

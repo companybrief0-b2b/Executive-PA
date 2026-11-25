@@ -39,6 +39,7 @@ export interface BriefAggregate {
   maCount: number
   scenarioCount: number
   decisionCount: number
+  marketRows: { label: string; ticker: string; value: string; pct: number }[]
   sp500: number | null
   dxy: number | null
   gold: number | null
@@ -471,11 +472,15 @@ export default function HistoricDashboard({ aggregates, latestBriefId, companyNa
   }
 
   // Market data from latest aggregate
-  const markets = [
-    fmtMarket(latest?.sp500 ?? null, 'S&P 500', previous?.sp500 ?? null),
-    fmtMarket(latest?.dxy ?? null,   'DXY',     previous?.dxy ?? null),
-    fmtMarket(latest?.gold ?? null,  'Gold',    previous?.gold ?? null),
-  ].filter(Boolean) as { label: string; value: string; up: boolean | null }[]
+  // Company-specific series first (own stock, competitors, customers, inputs), then macro.
+  const markets: { label: string; value: string; up: boolean | null; pct?: number }[] =
+    latest?.marketRows?.length
+      ? latest.marketRows.map(r => ({ label: r.label, value: r.value, up: r.pct >= 0, pct: r.pct }))
+      : ([
+          fmtMarket(latest?.sp500 ?? null, 'S&P 500', previous?.sp500 ?? null),
+          fmtMarket(latest?.dxy ?? null,   'DXY',     previous?.dxy ?? null),
+          fmtMarket(latest?.gold ?? null,  'Gold',    previous?.gold ?? null),
+        ].filter(Boolean) as { label: string; value: string; up: boolean | null }[])
 
   // Top 3 high-severity risks for sidebar
   const topRisksForSidebar = (latestBriefContent?.risk_summary ?? [])
@@ -613,7 +618,7 @@ export default function HistoricDashboard({ aggregates, latestBriefId, companyNa
                       <span className="text-xs font-mono text-gray-900 dark:text-white">{m.value}</span>
                       {m.up !== null && (
                         <span className={`text-[10px] font-bold ${m.up ? 'text-green-600' : 'text-red-500'}`}>
-                          {m.up ? '▲' : '▼'}
+                          {m.up ? '▲' : '▼'}{m.pct !== undefined ? ` ${Math.abs(m.pct).toFixed(1)}%` : ''}
                         </span>
                       )}
                     </div>

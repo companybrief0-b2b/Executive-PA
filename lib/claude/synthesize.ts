@@ -186,14 +186,17 @@ export async function synthesizeBrief(
   const cappedSignals = signals.length > 25000 ? signals.slice(0, 25000) + '\n[signals truncated]' : signals
   const signalsWithInternal = (internalSignals || '') + cappedSignals + irReportBlock
 
+  const marketNotes: string[] = []
   const marketSnapshots = await fetchLiveMarketData(revenueCountries, {
     stockTicker: company.stock_ticker ?? undefined,
     companyName: company.name,
     competitors: profile.competitors,
     commodities: profile.commodities,
     locationCountryNames,
+    supplierCountryNames: (profile.supplier_countries ?? []).map(s => s.country),
     customers: profile.customers ?? [],
     signals: signalsWithInternal,
+    diag: marketNotes,
   }).catch(err => {
     console.error('[market-data] failed, using empty snapshots:', err)
     return {} as Record<string, import('@/lib/types').StoredSparkline>
@@ -245,6 +248,8 @@ export async function synthesizeBrief(
   if (Object.keys(marketSnapshots).length > 0) {
     content.market_snapshots = marketSnapshots
   }
+  // Why a chart is missing (provider errors), kept on the brief for diagnosis.
+  if (marketNotes.length > 0) content.market_data_notes = marketNotes
 
   content.what_changed = computeWhatChanged(content, previousBriefContent)
 
