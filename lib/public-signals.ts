@@ -138,7 +138,8 @@ interface GdacsFeature {
   }
 }
 
-const GDACS_TYPE: Record<string, string> = { EQ: 'Earthquake', TC: 'Tropical cyclone', FL: 'Flood', VO: 'Volcano', DR: 'Drought', WF: 'Wildfire' }
+// Droughts are left out: GDACS keeps them open for months across dozens of countries, which reads as noise, not news.
+const GDACS_TYPE: Record<string, string> = { EQ: 'Earthquake', TC: 'Tropical cyclone', FL: 'Flood', VO: 'Volcano', WF: 'Wildfire' }
 
 export async function buildHazardSignals(countryNames: string[]): Promise<string> {
   const terms = countryTerms(countryNames)
@@ -153,7 +154,7 @@ export async function buildHazardSignals(countryNames: string[]): Promise<string
       `https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&minmagnitude=5.5&starttime=${iso(daysAgo(7))}&orderby=magnitude&limit=30`,
     ) as Promise<{ features?: UsgsFeature[] } | null>,
     getJson(
-      `https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?alertlevel=Orange;Red&eventlist=EQ;TC;FL;VO;DR;WF&fromdate=${iso(daysAgo(7))}&todate=${iso(new Date())}`,
+      `https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?alertlevel=Orange;Red&eventlist=EQ;TC;FL;VO;WF&fromdate=${iso(daysAgo(7))}&todate=${iso(new Date())}`,
     ) as Promise<{ features?: GdacsFeature[] } | null>,
   ])
 
@@ -175,7 +176,8 @@ export async function buildHazardSignals(countryNames: string[]): Promise<string
     if (!mentions(where)) continue
     const kind = GDACS_TYPE[p.eventtype ?? ''] ?? 'Hazard'
     const dates = `${(p.fromdate ?? '').slice(0, 10)} to ${(p.todate ?? '').slice(0, 10)}`
-    lines.push(`  - GDACS ${p.alertlevel} alert: ${kind} "${(p.name ?? '').slice(0, 80)}", ${p.country ?? 'affected countries'}, ${dates}. [URL: ${report}]`)
+    const where2 = (p.country ?? 'affected countries').slice(0, 60)
+    lines.push(`  - GDACS ${p.alertlevel} alert: ${kind} "${(p.name ?? '').slice(0, 80)}", ${where2}, ${dates}. [URL: ${report}]`)
     if (lines.length >= 8) break
   }
 

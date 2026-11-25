@@ -44,7 +44,7 @@ export default function DashboardMarketSignals({ snapshots }: Props) {
         </div>
       ))}
       <p className="text-[10px] text-gray-400">
-        Live data, fetched when the brief was generated. Charts show the last 30 days.
+        Live data, fetched when the brief was generated. Daily series show about 30 days; series marked monthly show 12 months.
       </p>
     </div>
   )
