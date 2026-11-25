@@ -23,7 +23,16 @@ function note(diag: Diag, message: string) {
   diag.push(message.replace(/(apikey|api_key|token)=[^&\s"]+/gi, '$1=***').slice(0, 160))
 }
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
+// Alpha Vantage's free tier answers bursts (more than about one request a second) with
+// "please spread out your requests". Calls take turns, 1.2 seconds apart.
+let avQueue: Promise<void> = Promise.resolve()
+function avGate(): Promise<void> {
+  const turn = avQueue.then(() => sleep(1_200))
+  avQueue = turn
+  return turn
+}
 
 async function getJson(url: string, diag: Diag, label: string): Promise<unknown | null> {
   try {
@@ -82,6 +91,7 @@ async function fetchFMPEod(symbol: string, label: string, ticker: string, diag: 
 async function fetchAVDaily(symbol: string, label: string, ticker: string, diag: Diag): Promise<StoredSparkline | null> {
   if (!AV_KEY) return null
   const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${encodeURIComponent(symbol)}&outputsize=compact&apikey=${AV_KEY}`
+  await avGate()
   const json = (await getJson(url, diag, `AlphaVantage ${symbol}`)) as Record<string, Record<string, Record<string, string>>> | null
   const series = json?.['Time Series (Daily)']
   if (!series) return null
@@ -96,6 +106,7 @@ async function fetchAVDaily(symbol: string, label: string, ticker: string, diag:
 async function fetchAVFX(from: string, to: string, diag: Diag): Promise<StoredSparkline | null> {
   if (!AV_KEY) return null
   const url = `https://www.alphavantage.co/query?function=FX_DAILY&from_symbol=${from}&to_symbol=${to}&outputsize=compact&apikey=${AV_KEY}`
+  await avGate()
   const json = (await getJson(url, diag, `AlphaVantage ${from}/${to}`)) as Record<string, Record<string, Record<string, string>>> | null
   const series = json?.['Time Series FX (Daily)']
   if (!series) return null
@@ -108,6 +119,7 @@ async function fetchAVFX(from: string, to: string, diag: Diag): Promise<StoredSp
 async function fetchAVCommodity(fn: string, label: string, ticker: string, unit: string, diag: Diag): Promise<StoredSparkline | null> {
   if (!AV_KEY) return null
   const url = `https://www.alphavantage.co/query?function=${fn}&interval=daily&apikey=${AV_KEY}`
+  await avGate()
   const json = (await getJson(url, diag, `AlphaVantage ${fn}`)) as { data?: Array<Record<string, string>> } | null
   const entries = (json?.data ?? [])
     .filter(d => d.value !== '.' && Number.isFinite(parseFloat(d.value)))
