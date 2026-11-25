@@ -20,8 +20,9 @@ export const MARKET_GROUP_LABEL: Record<MarketGroup, string> = {
   macro: 'Macro',
 }
 
-const FX_KEYS = ['eurusd', 'gbpusd', 'usdjpy', 'usdcny', 'usdils']
-const MACRO_KEYS = ['sp500', 'msci', 'dxy', 'oil', 'gold']
+const FX_KEYS = ['eurusd', 'gbpusd', 'usdjpy', 'usdcny', 'usdils', 'usdmxn', 'usdkrw', 'usdinr', 'usdchf', 'usdcad', 'usdbrl']
+// 'msci' and 'gold' only exist on briefs generated before the data sources changed.
+const MACRO_KEYS = ['sp500', 'nasdaq', 'vix', 'nikkei', 'dxy', 'oil', 'msci', 'gold']
 
 function usable(s: StoredSparkline | undefined): s is StoredSparkline {
   return !!s && Array.isArray(s.data) && s.data.length >= 2 && Number.isFinite(s.current)

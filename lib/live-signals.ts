@@ -1,6 +1,6 @@
 import type { Company, CompanyProfile, CompanyLocation } from './types'
 import { generateSimulatedSignals } from './claude/signals'
-import { fetchCompetitorSignals } from './finnhub'
+import { fetchCompetitorSignals, finnhubEarningsFor } from './finnhub'
 import { buildFREDMacroSignals } from './fred'
 import { buildCountrySignals } from './country-signals'
 import { buildEdgarSignals } from './sec-edgar'
@@ -231,6 +231,25 @@ export async function buildLiveSignals(company: Company, profile: CompanyProfile
       newsMatch.articles.forEach(a => lines.push(`  - ${fmt(a)}`))
     } else {
       lines.push(`  No public announcements detected this week.`)
+    }
+  }
+
+  // ── Earnings calendar: the company and its competitors ─────────────────
+  const earningsTargets = [
+    ...(company.stock_ticker ? [{ name: company.name, symbol: company.stock_ticker.replace(/^[A-Za-z]+:/, '').trim() }] : []),
+    ...finnhubCompetitors.filter(s => s.symbol).map(s => ({ name: s.name, symbol: s.symbol as string })),
+  ].filter((t, i, all) => t.symbol && all.findIndex(x => x.symbol === t.symbol) === i)
+  const earningsResults = await Promise.all(
+    earningsTargets.map(async t => ({ ...t, event: (await finnhubEarningsFor(t.symbol, 35).catch(() => []))[0] }))
+  )
+  const upcoming = earningsResults.filter(r => r.event)
+  if (upcoming.length > 0) {
+    lines.push('\n[EARNINGS CALENDAR — results due in the next 35 days: this company and its competitors]')
+    for (const { name, symbol, event } of upcoming) {
+      const e = event!
+      const eps = e.epsEstimate != null ? `; analysts expect EPS ${e.epsEstimate}` : ''
+      const rev = e.revenueEstimate ? `, revenue about ${Math.round(e.revenueEstimate / 1e6)}m` : ''
+      lines.push(`  - ${name} (${symbol}) reports Q${e.quarter} ${e.year} results on ${e.date}${eps}${rev}`)
     }
   }
 

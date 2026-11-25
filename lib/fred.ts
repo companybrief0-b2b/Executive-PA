@@ -84,6 +84,40 @@ export async function fetchFREDSparkline(key: FREDSeriesKey): Promise<StoredSpar
   return buildSparkline(s.label, s.ticker, s.unit, data)
 }
 
+/**
+ * Any FRED series as a sparkline. Daily series are labelled by day and month;
+ * monthly series (the IMF commodity prices) by month and year.
+ */
+export async function fetchFREDSeries(
+  seriesId: string,
+  label: string,
+  ticker: string,
+  unit = '',
+  opts: { points?: number; monthly?: boolean } = {},
+): Promise<StoredSparkline | null> {
+  const k = key()
+  if (!k) return null
+  const points = opts.points ?? 30
+  try {
+    const url = `${BASE}/series/observations?series_id=${seriesId}&api_key=${k}&sort_order=desc&limit=${points + 6}&file_type=json`
+    const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(12_000) })
+    if (!res.ok) return null
+    const json = (await res.json()) as { observations?: { date: string; value: string }[] }
+    const format: Intl.DateTimeFormatOptions = opts.monthly ? { month: 'short', year: '2-digit' } : { day: 'numeric', month: 'short' }
+    const data: StoredDataPoint[] = (json.observations ?? [])
+      .filter(o => o.value !== '.' && Number.isFinite(parseFloat(o.value)))
+      .slice(0, points)
+      .reverse()
+      .map(o => ({
+        date: new Date(o.date).toLocaleDateString('en-GB', format),
+        value: Math.round(parseFloat(o.value) * 1000) / 1000,
+      }))
+    return data.length >= 2 ? buildSparkline(label, ticker, unit, data) : null
+  } catch {
+    return null
+  }
+}
+
 export interface FREDLatest {
   value: number
   date: string

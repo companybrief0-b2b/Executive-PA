@@ -1,10 +1,19 @@
 import type { StoredSparkline, StoredDataPoint } from './types'
-import { fetchStockCandle, fetchForexCandle } from './finnhub'
-import { fetchFREDSparkline } from './fred'
+import { fetchFREDSeries, fetchFREDSparkline } from './fred'
 
 // Live market series for a brief: macro indicators, the company's own stock, its
-// competitors and customers, the commodities it depends on, and the countries it
-// is exposed to.
+// competitors and customers, the commodities it depends on, and the currencies of
+// the countries it is exposed to.
+//
+// Which source serves what (each verified against the production keys on 2026-11-25):
+//   FRED            indices (S&P 500, Nasdaq, VIX, Nikkei), the dollar, oil and gas, most
+//                   currencies, and the IMF monthly commodity prices (copper, aluminium,
+//                   nickel, zinc, iron ore, tin, uranium, grains, sugar, coffee, cotton,
+//                   rubber) plus the US steel price index. Free and reliable.
+//   FMP (free plan) a handful of large US stocks only; most symbols answer HTTP 402.
+//   Alpha Vantage   daily closes for individual stocks (25 requests a day, 1 a second),
+//                   so it is reserved for the company, competitors and customers.
+//   Finnhub         its candle endpoints are premium (403), so they are not used here.
 //
 // Every provider failure is recorded in the optional `diag` list (short, key-free
 // messages) so a missing chart can be explained instead of guessed at. Nothing in
@@ -69,7 +78,7 @@ function buildSparkline(label: string, ticker: string, unit: string, data: Store
 
 interface FmpEodRow { date?: string; close?: number | string; price?: number | string }
 
-/** Daily closes for any equity or ETF from FMP's stable API. */
+/** Daily closes from FMP's stable API (free plan: a handful of large US stocks only). */
 async function fetchFMPEod(symbol: string, label: string, ticker: string, diag: Diag): Promise<StoredSparkline | null> {
   if (!FMP_KEY) { note(diag, 'FMP: no API key configured'); return null }
   const iso = (d: Date) => d.toISOString().slice(0, 10)
@@ -116,31 +125,14 @@ async function fetchAVFX(from: string, to: string, diag: Diag): Promise<StoredSp
   return buildSparkline(`${from}/${to}`, `${from}/${to}`, '', data)
 }
 
-async function fetchAVCommodity(fn: string, label: string, ticker: string, unit: string, diag: Diag): Promise<StoredSparkline | null> {
-  if (!AV_KEY) return null
-  const url = `https://www.alphavantage.co/query?function=${fn}&interval=daily&apikey=${AV_KEY}`
-  await avGate()
-  const json = (await getJson(url, diag, `AlphaVantage ${fn}`)) as { data?: Array<Record<string, string>> } | null
-  const entries = (json?.data ?? [])
-    .filter(d => d.value !== '.' && Number.isFinite(parseFloat(d.value)))
-    .slice(0, 30).reverse()
-    .map(d => toDataPoint(d.date, parseFloat(d.value)))
-  return entries.length >= 2 ? buildSparkline(label, ticker, unit, entries) : null
-}
-
-/** FMP first, then (optionally) Alpha Vantage, then Finnhub candles (premium on most plans). */
+/** FMP first, then (optionally) Alpha Vantage. Used for individual stocks and ETFs. */
 async function fetchEquity(
   symbol: string, label: string, ticker: string, diag: Diag, opts: { alphaVantage?: boolean } = {},
 ): Promise<StoredSparkline | null> {
   const fromFmp = await fetchFMPEod(symbol, label, ticker, diag)
   if (fromFmp) return fromFmp
-  if (opts.alphaVantage) {
-    const fromAv = await fetchAVDaily(symbol, label, ticker, diag)
-    if (fromAv) return fromAv
-  }
-  const fromFinnhub = await fetchStockCandle(symbol, label, ticker)
-  if (!fromFinnhub) note(diag, `Finnhub ${symbol}: no candle data`)
-  return fromFinnhub
+  if (opts.alphaVantage) return fetchAVDaily(symbol, label, ticker, diag)
+  return null
 }
 
 /** Try each async factory in order, return first non-null result */
@@ -205,36 +197,42 @@ async function searchFMPTicker(companyName: string, diag: Diag): Promise<string 
 
 // ── Commodities ───────────────────────────────────────────────────────────────
 
+interface FredSeriesDef { id: string; label: string; ticker: string; unit: string; monthly?: boolean }
+
 interface CommodityDef {
   names: string[]
-  av?: { fn: string; label: string; ticker: string; unit: string }
+  fred?: FredSeriesDef
+  /** Last resort for things FRED has no price for (an ETF on FMP's free plan, which mostly refuses). */
   etf?: { symbol: string; label: string; ticker: string }
 }
 
 // Order matters: the first definition whose name appears in a profile entry wins.
+// IMF monthly prices come through FRED (series P…USDM); each chart shows 12 months.
 const COMMODITIES: CommodityDef[] = [
-  { names: ['brent'],                       av: { fn: 'BRENT',       label: 'Brent Oil', ticker: 'BRENT', unit: '$/bbl'    }, etf: { symbol: 'BNO',  label: 'Brent (BNO)',        ticker: 'BNO'  } },
-  { names: ['oil', 'crude', 'petroleum'],   av: { fn: 'WTI',         label: 'WTI Oil',   ticker: 'WTI',   unit: '$/bbl'    }, etf: { symbol: 'USO',  label: 'Oil (USO)',          ticker: 'USO'  } },
-  { names: ['natural gas', 'natgas', 'lng'],av: { fn: 'NATURAL_GAS', label: 'Nat. Gas',  ticker: 'NG',    unit: '$/MMBtu'  }, etf: { symbol: 'UNG',  label: 'Nat. Gas (UNG)',     ticker: 'UNG'  } },
-  { names: ['copper'],                      av: { fn: 'COPPER',      label: 'Copper',    ticker: 'HG',    unit: '$/t'      }, etf: { symbol: 'CPER', label: 'Copper (CPER)',      ticker: 'CPER' } },
-  { names: ['aluminium', 'aluminum'],       av: { fn: 'ALUMINUM',    label: 'Aluminium', ticker: 'ALI',   unit: '$/t'      } },
-  { names: ['wheat'],                       av: { fn: 'WHEAT',       label: 'Wheat',     ticker: 'ZW',    unit: ''         }, etf: { symbol: 'WEAT', label: 'Wheat (WEAT)',       ticker: 'WEAT' } },
-  { names: ['corn', 'maize'],               av: { fn: 'CORN',        label: 'Corn',      ticker: 'ZC',    unit: ''         }, etf: { symbol: 'CORN', label: 'Corn (CORN)',        ticker: 'CORN' } },
-  { names: ['cotton'],                      av: { fn: 'COTTON',      label: 'Cotton',    ticker: 'CT',    unit: ''         }, etf: { symbol: 'BAL',  label: 'Cotton (BAL)',       ticker: 'BAL'  } },
-  { names: ['sugar'],                       av: { fn: 'SUGAR',       label: 'Sugar',     ticker: 'SB',    unit: ''         }, etf: { symbol: 'CANE', label: 'Sugar (CANE)',       ticker: 'CANE' } },
-  { names: ['coffee'],                      av: { fn: 'COFFEE',      label: 'Coffee',    ticker: 'KC',    unit: ''         }, etf: { symbol: 'JO',   label: 'Coffee (JO)',        ticker: 'JO'   } },
-  { names: ['gold'],                        etf: { symbol: 'GLD',  label: 'Gold (GLD)',          ticker: 'GLD'  } },
-  { names: ['silver'],                      etf: { symbol: 'SLV',  label: 'Silver (SLV)',        ticker: 'SLV'  } },
-  { names: ['platinum'],                    etf: { symbol: 'PPLT', label: 'Platinum (PPLT)',     ticker: 'PPLT' } },
-  { names: ['palladium'],                   etf: { symbol: 'PALL', label: 'Palladium (PALL)',    ticker: 'PALL' } },
-  { names: ['steel', 'rebar', 'iron ore'],  etf: { symbol: 'SLX',  label: 'Steel (SLX)',         ticker: 'SLX'  } },
-  { names: ['lithium'],                     etf: { symbol: 'LIT',  label: 'Lithium (LIT)',       ticker: 'LIT'  } },
+  { names: ['brent'],                        fred: { id: 'DCOILBRENTEU', label: 'Brent oil',        ticker: 'BRENT', unit: '$/bbl' } },
+  { names: ['oil', 'crude', 'petroleum'],    fred: { id: 'DCOILWTICO',   label: 'WTI oil',          ticker: 'WTI',   unit: '$/bbl' } },
+  { names: ['natural gas', 'natgas', 'lng'], fred: { id: 'DHHNGSP',      label: 'Natural gas (Henry Hub)', ticker: 'NG', unit: '$/MMBtu' } },
+  { names: ['copper'],                       fred: { id: 'PCOPPUSDM',    label: 'Copper (monthly)',    ticker: 'CU',  unit: '$/t', monthly: true } },
+  { names: ['aluminium', 'aluminum'],        fred: { id: 'PALUMUSDM',    label: 'Aluminium (monthly)', ticker: 'AL',  unit: '$/t', monthly: true } },
+  { names: ['nickel'],                       fred: { id: 'PNICKUSDM',    label: 'Nickel (monthly)',    ticker: 'NI',  unit: '$/t', monthly: true } },
+  { names: ['zinc'],                         fred: { id: 'PZINCUSDM',    label: 'Zinc (monthly)',      ticker: 'ZN',  unit: '$/t', monthly: true } },
+  { names: ['tin'],                          fred: { id: 'PTINUSDM',     label: 'Tin (monthly)',       ticker: 'SN',  unit: '$/t', monthly: true } },
+  { names: ['iron ore'],                     fred: { id: 'PIORECRUSDM',  label: 'Iron ore (monthly)',  ticker: 'FE',  unit: '$/t', monthly: true } },
+  { names: ['steel', 'rebar'],               fred: { id: 'WPU101',       label: 'Steel prices, US index (monthly)', ticker: 'STEEL', unit: 'index', monthly: true } },
+  { names: ['uranium'],                      fred: { id: 'PURANUSDM',    label: 'Uranium (monthly)',   ticker: 'U',   unit: '$/lb', monthly: true } },
+  { names: ['wheat'],                        fred: { id: 'PWHEAMTUSDM',  label: 'Wheat (monthly)',     ticker: 'WHEAT', unit: '$/t', monthly: true } },
+  { names: ['corn', 'maize'],                fred: { id: 'PMAIZMTUSDM',  label: 'Corn (monthly)',      ticker: 'CORN', unit: '$/t', monthly: true } },
+  { names: ['sugar'],                        fred: { id: 'PSUGAISAUSDM', label: 'Sugar (monthly)',     ticker: 'SUGAR', unit: '¢/lb', monthly: true } },
+  { names: ['coffee'],                       fred: { id: 'PCOFFOTMUSDM', label: 'Coffee (monthly)',    ticker: 'COFFEE', unit: '¢/lb', monthly: true } },
+  { names: ['cotton'],                       fred: { id: 'PCOTTINDUSDM', label: 'Cotton (monthly)',    ticker: 'COTTON', unit: '¢/lb', monthly: true } },
+  { names: ['rubber'],                       fred: { id: 'PRUBBUSDM',    label: 'Rubber (monthly)',    ticker: 'RUBBER', unit: '¢/kg', monthly: true } },
+  { names: ['gold'],                         etf: { symbol: 'GLD',  label: 'Gold (GLD)',        ticker: 'GLD'  } },
+  { names: ['silver'],                       etf: { symbol: 'SLV',  label: 'Silver (SLV)',      ticker: 'SLV'  } },
+  { names: ['platinum'],                     etf: { symbol: 'PPLT', label: 'Platinum (PPLT)',   ticker: 'PPLT' } },
+  { names: ['palladium'],                    etf: { symbol: 'PALL', label: 'Palladium (PALL)',  ticker: 'PALL' } },
+  { names: ['lithium'],                      etf: { symbol: 'LIT',  label: 'Lithium (LIT)',     ticker: 'LIT'  } },
   { names: ['silicon', 'semiconductor', 'semiconductors', 'chips', 'wafer'], etf: { symbol: 'SOXX', label: 'Semis (SOXX)', ticker: 'SOXX' } },
-  { names: ['rare earth', 'neodymium'],     etf: { symbol: 'REMX', label: 'Rare earth (REMX)',   ticker: 'REMX' } },
-  { names: ['nickel'],                      etf: { symbol: 'NIKL', label: 'Nickel miners (NIKL)', ticker: 'NIKL' } },
-  { names: ['uranium'],                     etf: { symbol: 'URA',  label: 'Uranium (URA)',       ticker: 'URA'  } },
-  { names: ['timber', 'lumber', 'wood'],    etf: { symbol: 'WOOD', label: 'Timber (WOOD)',       ticker: 'WOOD' } },
-  { names: ['soy', 'soybean', 'soybeans'],  etf: { symbol: 'SOYB', label: 'Soybeans (SOYB)',     ticker: 'SOYB' } },
+  { names: ['rare earth', 'neodymium'],      etf: { symbol: 'REMX', label: 'Rare earth (REMX)', ticker: 'REMX' } },
 ]
 
 /** "Steel (rebar)" → steel, "Crude Oil (energy costs)" → oil, "Rare earth elements" → rare earth. */
@@ -244,108 +242,42 @@ function resolveCommodity(raw: string): CommodityDef | null {
 }
 
 async function fetchCommodity(def: CommodityDef, diag: Diag): Promise<StoredSparkline | null> {
-  if (def.av) {
-    const s = await fetchAVCommodity(def.av.fn, def.av.label, def.av.ticker, def.av.unit, diag)
+  if (def.fred) {
+    const f = def.fred
+    const s = await fetchFREDSeries(f.id, f.label, f.ticker, f.unit, { points: f.monthly ? 12 : 30, monthly: f.monthly })
     if (s) return s
+    note(diag, `FRED ${f.id}: no data returned`)
   }
   if (def.etf) return fetchEquity(def.etf.symbol, def.etf.label, def.etf.ticker, diag)
   return null
 }
 
-// ── Country and sector context ────────────────────────────────────────────────
+// ── Currencies of the countries a company touches ─────────────────────────────
 
-const COUNTRY_ETF: Record<string, { symbol: string; label: string }> = {
-  'japan':       { symbol: 'EWJ',  label: 'Japan (EWJ)'       },
-  'japanese':    { symbol: 'EWJ',  label: 'Japan (EWJ)'       },
-  'germany':     { symbol: 'EWG',  label: 'Germany (EWG)'     },
-  'german':      { symbol: 'EWG',  label: 'Germany (EWG)'     },
-  'india':       { symbol: 'INDA', label: 'India (INDA)'      },
-  'indian':      { symbol: 'INDA', label: 'India (INDA)'      },
-  'france':      { symbol: 'EWQ',  label: 'France (EWQ)'      },
-  'french':      { symbol: 'EWQ',  label: 'France (EWQ)'      },
-  'south korea': { symbol: 'EWY',  label: 'S.Korea (EWY)'     },
-  'korean':      { symbol: 'EWY',  label: 'S.Korea (EWY)'     },
-  'taiwan':      { symbol: 'EWT',  label: 'Taiwan (EWT)'      },
-  'brazil':      { symbol: 'EWZ',  label: 'Brazil (EWZ)'      },
-  'brazilian':   { symbol: 'EWZ',  label: 'Brazil (EWZ)'      },
-  'canada':      { symbol: 'EWC',  label: 'Canada (EWC)'      },
-  'canadian':    { symbol: 'EWC',  label: 'Canada (EWC)'      },
-  'australia':   { symbol: 'EWA',  label: 'Australia (EWA)'   },
-  'australian':  { symbol: 'EWA',  label: 'Australia (EWA)'   },
-  'mexico':      { symbol: 'EWW',  label: 'Mexico (EWW)'      },
-  'swiss':       { symbol: 'EWL',  label: 'Switzerland (EWL)' },
-  'switzerland': { symbol: 'EWL',  label: 'Switzerland (EWL)' },
-  'israel':      { symbol: 'EIS',  label: 'Israel (EIS)'      },
-  'israeli':     { symbol: 'EIS',  label: 'Israel (EIS)'      },
-  'china':       { symbol: 'MCHI', label: 'China (MCHI)'      },
-  'chinese':     { symbol: 'MCHI', label: 'China (MCHI)'      },
-  'singapore':   { symbol: 'EWS',  label: 'Singapore (EWS)'   },
-  'united kingdom': { symbol: 'EWU', label: 'UK (EWU)'         },
-  'italy':       { symbol: 'EWI',  label: 'Italy (EWI)'       },
-  'spain':       { symbol: 'EWP',  label: 'Spain (EWP)'       },
-  'netherlands': { symbol: 'EWN',  label: 'Netherlands (EWN)' },
-  'poland':      { symbol: 'EPOL', label: 'Poland (EPOL)'     },
-  'turkey':      { symbol: 'TUR',  label: 'Turkey (TUR)'      },
-  'vietnam':     { symbol: 'VNM',  label: 'Vietnam (VNM)'     },
+interface FxDef {
+  key: string
+  match: RegExp
+  fred?: FredSeriesDef
+  /** Alpha Vantage pair, for currencies FRED does not carry (it holds 25 requests a day, so only these). */
+  av?: [string, string]
+  label: string
+  ticker: string
 }
 
-const SIGNAL_SECTOR_ETF: Array<{ keywords: string[]; symbol: string; label: string; key: string }> = [
-  { keywords: ['shipping', 'freight', 'container ship', 'maritime', 'logistics disruption'], symbol: 'BDRY', label: 'Dry Freight (BDRY)', key: 'signal_freight'  },
-  { keywords: ['defence', 'defense', 'military', 'weapons', 'armed conflict', 'war'],        symbol: 'ITA',  label: 'Defence (ITA)',      key: 'signal_defence'  },
-  { keywords: ['semiconductor', 'chip shortage', 'wafer', 'tsmc', 'fab capacity'],           symbol: 'SOXX', label: 'Semis (SOXX)',       key: 'signal_semis'    },
-  { keywords: ['solar', 'wind energy', 'renewable', 'clean energy', 'green energy'],         symbol: 'ICLN', label: 'Clean Energy (ICLN)',key: 'signal_clean'    },
-  { keywords: ['oil major', 'refinery', 'upstream', 'downstream', 'lng export'],             symbol: 'XLE',  label: 'Energy (XLE)',       key: 'signal_energy'   },
-  { keywords: ['interest rate hike', 'central bank rate', 'credit tightening', 'lending'],   symbol: 'XLF',  label: 'Financials (XLF)',   key: 'signal_fin'      },
-  { keywords: ['pharma', 'pharmaceutical', 'biotech', 'clinical trial', 'drug approval'],    symbol: 'XLV',  label: 'Healthcare (XLV)',   key: 'signal_health'   },
-  { keywords: ['cybersecurity', 'ransomware', 'data breach', 'cyber attack'],                symbol: 'HACK', label: 'Cyber (HACK)',        key: 'signal_cyber'    },
+// DEX… series from FRED's H.10 release: local currency per US dollar, except the
+// pound and euro which are dollars per unit.
+const FX: FxDef[] = [
+  { key: 'gbpusd', match: /\buk\b|united kingdom|britain|england/, fred: { id: 'DEXUSUK', label: 'GBP/USD', ticker: '£/$', unit: '' }, label: 'GBP/USD', ticker: '£/$' },
+  { key: 'usdjpy', match: /japan/,                      fred: { id: 'DEXJPUS', label: 'USD/JPY', ticker: '$/¥', unit: '' }, label: 'USD/JPY', ticker: '$/¥' },
+  { key: 'usdcny', match: /china|hong kong/,            fred: { id: 'DEXCHUS', label: 'USD/CNY', ticker: '$/¥', unit: '' }, label: 'USD/CNY', ticker: '$/CNY' },
+  { key: 'usdmxn', match: /mexico/,                     fred: { id: 'DEXMXUS', label: 'USD/MXN', ticker: '$/MXN', unit: '' }, label: 'USD/MXN', ticker: '$/MXN' },
+  { key: 'usdkrw', match: /korea/,                      fred: { id: 'DEXKOUS', label: 'USD/KRW', ticker: '$/KRW', unit: '' }, label: 'USD/KRW', ticker: '$/KRW' },
+  { key: 'usdinr', match: /india/,                      fred: { id: 'DEXINUS', label: 'USD/INR', ticker: '$/INR', unit: '' }, label: 'USD/INR', ticker: '$/INR' },
+  { key: 'usdchf', match: /switzerland|swiss/,          fred: { id: 'DEXSZUS', label: 'USD/CHF', ticker: '$/CHF', unit: '' }, label: 'USD/CHF', ticker: '$/CHF' },
+  { key: 'usdcad', match: /canada/,                     fred: { id: 'DEXCAUS', label: 'USD/CAD', ticker: '$/CAD', unit: '' }, label: 'USD/CAD', ticker: '$/CAD' },
+  { key: 'usdbrl', match: /brazil/,                     fred: { id: 'DEXBZUS', label: 'USD/BRL', ticker: '$/BRL', unit: '' }, label: 'USD/BRL', ticker: '$/BRL' },
+  { key: 'usdils', match: /israel/,                     av: ['USD', 'ILS'], label: 'USD/ILS', ticker: '$/₪' },
 ]
-
-/** Country ETFs for the countries a company buys from (up to `max`), by profile name. */
-function supplierCountryETFs(countryNames: string[], max: number): Array<{ symbol: string; label: string; key: string }> {
-  const picked: Array<{ symbol: string; label: string; key: string }> = []
-  const seen = new Set<string>()
-  for (const country of countryNames) {
-    const lowered = country.toLowerCase()
-    const term = Object.keys(COUNTRY_ETF).find(t => lowered.includes(t))
-    if (!term) continue
-    const etf = COUNTRY_ETF[term]
-    if (seen.has(etf.symbol)) continue
-    seen.add(etf.symbol)
-    picked.push({ ...etf, key: `supplier_${etf.symbol.toLowerCase()}` })
-    if (picked.length >= max) break
-  }
-  return picked
-}
-
-function pickSignalDrivenCharts(
-  signals: string,
-  profileCountriesLower: string[],
-  alreadyUsed: Set<string>,
-): { countryETFs: Array<{ symbol: string; label: string; key: string }>; sectorETF: { symbol: string; label: string; key: string } | null } {
-  const lower = signals.toLowerCase()
-  const seenSymbols = new Set(alreadyUsed)
-  const countryETFs: Array<{ symbol: string; label: string; key: string }> = []
-
-  for (const [term, etf] of Object.entries(COUNTRY_ETF)) {
-    if (seenSymbols.has(etf.symbol)) continue
-    if (profileCountriesLower.some(c => c.includes(term.split(' ')[0]))) continue
-    if (lower.includes(term)) {
-      countryETFs.push({ ...etf, key: `signal_${etf.symbol.toLowerCase()}` })
-      seenSymbols.add(etf.symbol)
-      if (countryETFs.length >= 2) break
-    }
-  }
-
-  let sectorETF: { symbol: string; label: string; key: string } | null = null
-  for (const entry of SIGNAL_SECTOR_ETF) {
-    if (entry.keywords.some(kw => lower.includes(kw))) {
-      sectorETF = { symbol: entry.symbol, label: entry.label, key: entry.key }
-      break
-    }
-  }
-
-  return { countryETFs, sectorETF }
-}
 
 // ── Peers (competitors, customers) ────────────────────────────────────────────
 
@@ -355,7 +287,7 @@ async function peerChart(kind: 'competitor' | 'customer', peer: Peer, diag: Diag
   if (!peer.name) return null
   const symbol = cleanTicker(peer.ticker) ?? (await searchFMPTicker(peer.name, diag))
   if (!symbol) return null
-  const series = await fetchEquity(symbol, peer.name, symbol, diag)
+  const series = await fetchEquity(symbol, peer.name, symbol, diag, { alphaVantage: true })
   if (!series) return null
   const slug = peer.name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 20)
   return [`${kind}_${slug}`, series]
@@ -366,9 +298,9 @@ async function collectPeers(
   kind: 'competitor' | 'customer', peers: Peer[], want: number, diag: Diag, deadline: number,
 ): Promise<Record<string, StoredSparkline>> {
   const out: Record<string, StoredSparkline> = {}
-  for (let i = 0; i < peers.length && Object.keys(out).length < want; i += 3) {
+  for (let i = 0; i < peers.length && Object.keys(out).length < want; i += 2) {
     if (Date.now() > deadline) { note(diag, `${kind} charts stopped early: time budget used`); break }
-    const batch = peers.slice(i, i + 3)
+    const batch = peers.slice(i, i + 2)
     const results = await Promise.all(batch.map(p => peerChart(kind, p, diag).catch(() => null)))
     for (const r of results) {
       if (r && Object.keys(out).length < want) out[r[0]] = r[1]
@@ -399,72 +331,46 @@ export async function fetchLiveMarketData(
   const diag = options.diag
   const deadline = Date.now() + 90_000
   const allCountries = [...revenueCountryNames, ...(options.locationCountryNames ?? []), ...(options.supplierCountryNames ?? [])]
-  const lower    = allCountries.map(c => c.toLowerCase())
-  const hasUK    = lower.some(c => c.includes('uk') || c.includes('united kingdom'))
-  const hasJapan = lower.some(c => c.includes('japan'))
-  const hasChina = lower.some(c => c.includes('china'))
-  const hasIsrael = lower.some(c => c.includes('israel'))
+  const lower = allCountries.map(c => c.toLowerCase())
 
   const snapshots: Record<string, StoredSparkline> = {}
 
-  // ── Wave 1: indices + USD ─────────────────────────────────────────────────
-  // The S&P 500 and MSCI World charts are the SPY and URTH ETFs, and are labelled as such.
-  const [sp500, dxy, eurusd, oil] = await Promise.all([
-    fetchEquity('SPY', 'S&P 500 (SPY)', 'SPY', diag, { alphaVantage: true }),
-    firstOf(
-      () => fetchForexCandle('OANDA:USD_INDEX', 'USD Index', 'DXY'),
-      () => fetchFREDSparkline('dxy'),
-    ),
-    firstOf(
-      () => fetchForexCandle('OANDA:EUR_USD', 'EUR/USD', '€/$'),
-      () => fetchFREDSparkline('eurusd'),
-      () => fetchAVFX('EUR', 'USD', diag),
-    ),
-    firstOf(
-      () => fetchFREDSparkline('oil'),
-      () => fetchAVCommodity('WTI', 'WTI Oil', 'WTI', '$/bbl', diag),
-    ),
+  // ── Wave 1: indices, the dollar, oil (all FRED, no rate limit worth noting) ──
+  const [sp500, nasdaq, vix, dxy, eurusd, oil, nikkei] = await Promise.all([
+    fetchFREDSeries('SP500', 'S&P 500', 'SPX'),
+    fetchFREDSeries('NASDAQCOM', 'Nasdaq Composite', 'IXIC'),
+    fetchFREDSeries('VIXCLS', 'VIX (market volatility)', 'VIX'),
+    fetchFREDSparkline('dxy'),
+    firstOf(() => fetchFREDSparkline('eurusd'), () => fetchAVFX('EUR', 'USD', diag)),
+    firstOf(() => fetchFREDSparkline('oil')),
+    lower.some(c => c.includes('japan'))
+      ? fetchFREDSeries('NIKKEI225', 'Nikkei 225', 'N225')
+      : Promise.resolve(null),
   ])
   if (sp500) snapshots['sp500'] = sp500
+  if (nasdaq) snapshots['nasdaq'] = nasdaq
+  if (vix) snapshots['vix'] = vix
   if (dxy) snapshots['dxy'] = dxy
   if (eurusd) snapshots['eurusd'] = eurusd
   if (oil) snapshots['oil'] = oil
+  if (nikkei) snapshots['nikkei'] = nikkei
+  if (!sp500) note(diag, 'FRED SP500: no data returned')
 
-  await sleep(600)
-
-  // ── Wave 2: MSCI, gold, FX for the countries the company touches ──────────
-  const [msci, gold, gbpusd, usdjpy, usdcny, usdils] = await Promise.all([
-    fetchEquity('URTH', 'MSCI World (URTH)', 'URTH', diag),
-    fetchEquity('GLD', 'Gold (GLD)', 'GLD', diag),
-    hasUK ? firstOf(
-      () => fetchForexCandle('OANDA:GBP_USD', 'GBP/USD', '£/$'),
-      () => fetchFREDSparkline('gbpusd'),
-      () => fetchAVFX('GBP', 'USD', diag),
-    ) : Promise.resolve(null),
-    hasJapan ? firstOf(
-      () => fetchForexCandle('OANDA:USD_JPY', 'USD/JPY', '$/¥'),
-      () => fetchFREDSparkline('usdjpy'),
-      () => fetchAVFX('USD', 'JPY', diag),
-    ) : Promise.resolve(null),
-    hasChina ? firstOf(
-      () => fetchForexCandle('OANDA:USD_CNH', 'USD/CNH', '$/CNH'),
-      () => fetchFREDSparkline('usdcny'),
-      () => fetchAVFX('USD', 'CNY', diag),
-    ) : Promise.resolve(null),
-    hasIsrael ? firstOf(
-      () => fetchForexCandle('OANDA:USD_ILS', 'USD/ILS', '$/₪'),
-      () => fetchAVFX('USD', 'ILS', diag),
-    ) : Promise.resolve(null),
-  ])
-  if (msci) snapshots['msci'] = msci
-  if (gold) snapshots['gold'] = gold
-  if (gbpusd) snapshots['gbpusd'] = gbpusd
-  if (usdjpy) snapshots['usdjpy'] = usdjpy
-  if (usdcny) snapshots['usdcny'] = usdcny
-  if (usdils) snapshots['usdils'] = usdils
+  // ── Wave 2: currencies for the countries the company sells to, buys from or operates in ──
+  const fxWanted = FX.filter(def => lower.some(c => def.match.test(c)))
+  const fxResults = await Promise.all(fxWanted.map(async def => {
+    const series = def.fred
+      ? await fetchFREDSeries(def.fred.id, def.fred.label, def.fred.ticker, def.fred.unit)
+      : null
+    return [def, series ?? (def.av ? await fetchAVFX(def.av[0], def.av[1], diag) : null)] as const
+  }))
+  for (const [def, series] of fxResults) {
+    if (series) snapshots[def.key] = { ...series, label: def.label, ticker: def.ticker }
+    else note(diag, `No ${def.label} series available`)
+  }
 
   // ── Wave 3: the company itself, competitors, and the commodities it depends on ──
-  const { stockTicker, companyName, competitors = [], commodities = [], customers = [], signals = '' } = options
+  const { stockTicker, companyName, competitors = [], commodities = [], customers = [] } = options
 
   if (stockTicker && Date.now() < deadline) {
     const s = await fetchEquity(stockTicker, companyName ?? stockTicker, stockTicker, diag, { alphaVantage: true })
@@ -472,53 +378,32 @@ export async function fetchLiveMarketData(
   }
 
   if (Date.now() < deadline) {
-    Object.assign(snapshots, await collectPeers('competitor', competitors.slice(0, 8), 3, diag, deadline))
+    Object.assign(snapshots, await collectPeers('competitor', competitors.slice(0, 6), 3, diag, deadline))
   }
 
-  // Up to 4 commodity charts, trying up to 8 profile entries (many entries, such as
-  // "Concrete" or "Glass", have no public price series).
-  const wantedCommodities = new Set<CommodityDef>()
-  let commodityAttempts = 0
-  for (const name of commodities) {
-    if (wantedCommodities.size >= 4 || commodityAttempts >= 8 || Date.now() > deadline) break
+  // Up to 4 commodity charts, looking through up to 10 profile entries (many entries,
+  // such as "Concrete" or "Glass", have no public price series).
+  const seenDefs = new Set<CommodityDef>()
+  let charted = 0
+  for (const name of commodities.slice(0, 10)) {
+    if (charted >= 4 || Date.now() > deadline) break
     const def = resolveCommodity(name)
-    if (!def || wantedCommodities.has(def)) continue
-    commodityAttempts++
-    // Oil is already charted in the macro wave; gold likewise.
-    if (def.av?.fn === 'WTI' && snapshots['oil']) { wantedCommodities.add(def); continue }
-    if (def.etf?.symbol === 'GLD' && snapshots['gold']) { wantedCommodities.add(def); continue }
+    if (!def || seenDefs.has(def)) continue
+    seenDefs.add(def)
+    // WTI oil is already charted in wave 1.
+    if (def.fred?.id === 'DCOILWTICO' && snapshots['oil']) { charted++; continue }
     const s = await fetchCommodity(def, diag)
     if (s) {
-      wantedCommodities.add(def)
-      snapshots[`commodity_${(def.names[0]).replace(/[^a-z0-9]/g, '_')}`] = s
+      charted++
+      snapshots[`commodity_${def.names[0].replace(/[^a-z0-9]/g, '_')}`] = s
     } else {
       note(diag, `No price series available for commodity "${name.slice(0, 30)}"`)
     }
   }
 
-  // ── Wave 4: customers, supplier countries, and what the news is about this week ──
+  // ── Wave 4: customers ──
   if (Date.now() < deadline) {
-    Object.assign(snapshots, await collectPeers('customer', customers.slice(0, 8), 3, diag, deadline))
-  }
-
-  const usedEtfSymbols = new Set<string>()
-  for (const etf of supplierCountryETFs(options.supplierCountryNames ?? [], 3)) {
-    if (Date.now() > deadline) break
-    usedEtfSymbols.add(etf.symbol)
-    const s = await fetchEquity(etf.symbol, etf.label, etf.symbol, diag)
-    if (s) snapshots[etf.key] = s
-  }
-
-  if (signals && Date.now() < deadline) {
-    const { countryETFs, sectorETF } = pickSignalDrivenCharts(signals, lower, usedEtfSymbols)
-    for (const etf of countryETFs) {
-      const s = await fetchEquity(etf.symbol, etf.label, etf.symbol, diag)
-      if (s) snapshots[etf.key] = s
-    }
-    if (sectorETF) {
-      const s = await fetchEquity(sectorETF.symbol, sectorETF.label, sectorETF.symbol, diag)
-      if (s) snapshots[sectorETF.key] = s
-    }
+    Object.assign(snapshots, await collectPeers('customer', customers.slice(0, 6), 3, diag, deadline))
   }
 
   console.log(`[market-data] Fetched ${Object.keys(snapshots).length} live series${diag?.length ? `; ${diag.length} provider notes, e.g. ${diag.slice(0, 3).join(' | ')}` : ''}`)

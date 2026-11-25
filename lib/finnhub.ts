@@ -137,6 +137,16 @@ export interface EarningsEvent {
   year: number
 }
 
+/** Upcoming reports for one symbol (free on Finnhub, unlike its candle endpoints). */
+export async function finnhubEarningsFor(symbol: string, daysAhead = 35): Promise<EarningsEvent[]> {
+  const from = new Date().toISOString().split('T')[0]
+  const to   = new Date(Date.now() + daysAhead * 86400000).toISOString().split('T')[0]
+  const data = await get<{ earningsCalendar: EarningsEvent[] }>(
+    `/calendar/earnings?from=${from}&to=${to}&symbol=${encodeURIComponent(symbol)}`
+  )
+  return data?.earningsCalendar ?? []
+}
+
 export async function finnhubEarnings(daysAhead = 14): Promise<EarningsEvent[]> {
   const from = new Date().toISOString().split('T')[0]
   const to   = new Date(Date.now() + daysAhead * 86400000).toISOString().split('T')[0]
