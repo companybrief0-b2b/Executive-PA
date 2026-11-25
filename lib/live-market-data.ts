@@ -2,41 +2,44 @@ import type { StoredSparkline, StoredDataPoint } from './types'
 import { fetchStockCandle, fetchForexCandle } from './finnhub'
 import { fetchFREDSparkline } from './fred'
 
+// Live market series for a brief: macro indicators, the company's own stock, its
+// competitors and customers, the commodities it depends on, and the countries it
+// is exposed to.
+//
+// Every provider failure is recorded in the optional `diag` list (short, key-free
+// messages) so a missing chart can be explained instead of guessed at. Nothing in
+// here ever invents a number: if a series cannot be fetched it is simply absent.
+
 const AV_KEY  = process.env.ALPHA_VANTAGE_KEY
 const FMP_KEY = process.env.FMP_API_KEY
+// FMP retired its old /api/v3 endpoints for accounts created after Aug 2025; the
+// "stable" API below is the supported replacement.
+const FMP_BASE = 'https://financialmodelingprep.com/stable'
 
-// ── Commodity name → Alpha Vantage function ───────────────────────────────────
-const AV_COMMODITY_MAP: Record<string, { fn: string; label: string; ticker: string; unit: string }> = {
-  'oil':         { fn: 'WTI',         label: 'WTI Oil',   ticker: 'WTI',  unit: '$/bbl'    },
-  'crude':       { fn: 'WTI',         label: 'WTI Oil',   ticker: 'WTI',  unit: '$/bbl'    },
-  'brent':       { fn: 'BRENT',       label: 'Brent Oil', ticker: 'BNO',  unit: '$/bbl'    },
-  'gold':        { fn: 'GOLD',        label: 'Gold',      ticker: 'XAU',  unit: '$/oz'     },
-  'silver':      { fn: 'SILVER',      label: 'Silver',    ticker: 'XAG',  unit: '$/oz'     },
-  'platinum':    { fn: 'PLATINUM',    label: 'Platinum',  ticker: 'PPLT', unit: '$/oz'     },
-  'copper':      { fn: 'COPPER',      label: 'Copper',    ticker: 'HG',   unit: '¢/lb'     },
-  'aluminium':   { fn: 'ALUMINUM',    label: 'Aluminium', ticker: 'ALI',  unit: '$/t'      },
-  'aluminum':    { fn: 'ALUMINUM',    label: 'Aluminium', ticker: 'ALI',  unit: '$/t'      },
-  'natural gas': { fn: 'NATURAL_GAS', label: 'Nat. Gas',  ticker: 'NG',   unit: '$/MMBtu'  },
-  'natgas':      { fn: 'NATURAL_GAS', label: 'Nat. Gas',  ticker: 'NG',   unit: '$/MMBtu'  },
-  'wheat':       { fn: 'WHEAT',       label: 'Wheat',     ticker: 'ZW',   unit: '¢/bu'     },
-  'corn':        { fn: 'CORN',        label: 'Corn',      ticker: 'ZC',   unit: '¢/bu'     },
-  'cotton':      { fn: 'COTTON',      label: 'Cotton',    ticker: 'CT',   unit: '¢/lb'     },
-  'sugar':       { fn: 'SUGAR',       label: 'Sugar',     ticker: 'SB',   unit: '¢/lb'     },
-  'coffee':      { fn: 'COFFEE',      label: 'Coffee',    ticker: 'KC',   unit: '¢/lb'     },
+type Diag = string[] | undefined
+
+function note(diag: Diag, message: string) {
+  if (!diag || diag.length >= 40) return
+  diag.push(message.replace(/(apikey|api_key|token)=[^&\s"]+/gi, '$1=***').slice(0, 160))
 }
-// Commodities with no AV function → FMP ETF proxy
-const FMP_COMMODITY_MAP: Record<string, { symbol: string; label: string; ticker: string }> = {
-  'steel':          { symbol: 'SLX',    label: 'Steel ETF',   ticker: 'SLX'  },
-  'lithium':        { symbol: 'LIT',    label: 'Lithium ETF', ticker: 'LIT'  },
-  'cobalt':         { symbol: 'LIT',    label: 'Lithium ETF', ticker: 'LIT'  },
-  'silicon':        { symbol: 'SOXX',   label: 'Semis ETF',   ticker: 'SOXX' },
-  'semiconductors': { symbol: 'SOXX',   label: 'Semis ETF',   ticker: 'SOXX' },
-  'chips':          { symbol: 'SOXX',   label: 'Semis ETF',   ticker: 'SOXX' },
-  'rare earth':     { symbol: 'REMX',   label: 'Rare Earth',  ticker: 'REMX' },
-  'palladium':      { symbol: 'PALL',   label: 'Palladium',   ticker: 'PALL' },
-  'nickel':         { symbol: 'JJNUSX', label: 'Nickel',      ticker: 'JJNU' },
-  'uranium':        { symbol: 'URA',    label: 'Uranium ETF', ticker: 'URA'  },
-  'timber':         { symbol: 'WOOD',   label: 'Timber ETF',  ticker: 'WOOD' },
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+async function getJson(url: string, diag: Diag, label: string): Promise<unknown | null> {
+  try {
+    const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(12_000) })
+    if (!res.ok) { note(diag, `${label}: HTTP ${res.status}`); return null }
+    const json = (await res.json()) as unknown
+    if (json && typeof json === 'object' && !Array.isArray(json)) {
+      const o = json as Record<string, unknown>
+      const msg = o['Error Message'] ?? o['Note'] ?? o['Information'] ?? o['message'] ?? o['error']
+      if (msg) { note(diag, `${label}: ${String(msg)}`); return null }
+    }
+    return json
+  } catch (err) {
+    note(diag, `${label}: ${err instanceof Error ? err.message : 'request failed'}`)
+    return null
+  }
 }
 
 function toDataPoint(date: string, value: number): StoredDataPoint {
@@ -46,77 +49,87 @@ function toDataPoint(date: string, value: number): StoredDataPoint {
   }
 }
 
-function buildSparkline(
-  label: string, ticker: string, unit: string, data: StoredDataPoint[]
-): StoredSparkline {
+function buildSparkline(label: string, ticker: string, unit: string, data: StoredDataPoint[]): StoredSparkline {
   const current = data[data.length - 1]?.value ?? 0
   const open    = data[0]?.value ?? current
   const pct     = open !== 0 ? Math.round(((current - open) / open) * 10000) / 100 : 0
   return { label, ticker, unit, data, current, open, pct, up: current >= open }
 }
 
-// ── Alpha Vantage ─────────────────────────────────────────────────────────────
+// ── Providers ─────────────────────────────────────────────────────────────────
 
-async function fetchAVFX(from: string, to: string): Promise<StoredSparkline | null> {
+interface FmpEodRow { date?: string; close?: number | string; price?: number | string }
+
+/** Daily closes for any equity or ETF from FMP's stable API. */
+async function fetchFMPEod(symbol: string, label: string, ticker: string, diag: Diag): Promise<StoredSparkline | null> {
+  if (!FMP_KEY) { note(diag, 'FMP: no API key configured'); return null }
+  const iso = (d: Date) => d.toISOString().slice(0, 10)
+  const from = iso(new Date(Date.now() - 45 * 86_400_000))
+  const to   = iso(new Date())
+  const url  = `${FMP_BASE}/historical-price-eod/light?symbol=${encodeURIComponent(symbol)}&from=${from}&to=${to}&apikey=${FMP_KEY}`
+  const json = await getJson(url, diag, `FMP ${symbol}`)
+  if (!Array.isArray(json)) return null
+  const rows = (json as FmpEodRow[])
+    .map(r => ({ date: String(r.date ?? ''), value: Number(r.close ?? r.price) }))
+    .filter(r => r.date && Number.isFinite(r.value))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(-30)
+  if (rows.length < 2) { note(diag, `FMP ${symbol}: no price history returned`); return null }
+  return buildSparkline(label, ticker, '', rows.map(r => toDataPoint(r.date, r.value)))
+}
+
+/** Alpha Vantage daily closes (free tier: 25 requests a day, so used sparingly). */
+async function fetchAVDaily(symbol: string, label: string, ticker: string, diag: Diag): Promise<StoredSparkline | null> {
   if (!AV_KEY) return null
-  try {
-    const url = `https://www.alphavantage.co/query?function=FX_DAILY&from_symbol=${from}&to_symbol=${to}&outputsize=compact&apikey=${AV_KEY}`
-    const res = await fetch(url, { cache: 'no-store' })
-    if (!res.ok) return null
-    const json = await res.json()
-    if (json.Note || json.Information) return null
-    const series = json['Time Series FX (Daily)']
-    if (!series) return null
-    const data = Object.entries(series)
-      .slice(0, 30).reverse()
-      .map(([date, v]) => toDataPoint(date, parseFloat((v as Record<string, string>)['4. close'])))
-    return buildSparkline(`${from}/${to}`, `${from}/${to}`, '', data)
-  } catch (err) {
-    console.warn('[market-data] fetchAVFX failed:', err instanceof Error ? err.message : err)
-    return null
-  }
+  const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${encodeURIComponent(symbol)}&outputsize=compact&apikey=${AV_KEY}`
+  const json = (await getJson(url, diag, `AlphaVantage ${symbol}`)) as Record<string, Record<string, Record<string, string>>> | null
+  const series = json?.['Time Series (Daily)']
+  if (!series) return null
+  const data = Object.entries(series)
+    .slice(0, 30).reverse()
+    .map(([date, v]) => ({ date, value: parseFloat(v['4. close']) }))
+    .filter(p => Number.isFinite(p.value))
+    .map(p => toDataPoint(p.date, p.value))
+  return data.length >= 2 ? buildSparkline(label, ticker, '', data) : null
 }
 
-async function fetchAVCommodity(fn: string, label: string, ticker: string, unit: string): Promise<StoredSparkline | null> {
+async function fetchAVFX(from: string, to: string, diag: Diag): Promise<StoredSparkline | null> {
   if (!AV_KEY) return null
-  try {
-    const url = `https://www.alphavantage.co/query?function=${fn}&interval=daily&apikey=${AV_KEY}`
-    const res = await fetch(url, { cache: 'no-store' })
-    if (!res.ok) return null
-    const json = await res.json()
-    if (json.Note || json.Information) return null
-    const entries = (json.data ?? [])
-      .filter((d: Record<string, string>) => d.value !== '.')
-      .slice(0, 30).reverse()
-      .map((d: Record<string, string>) => toDataPoint(d.date, parseFloat(d.value)))
-    if (!entries.length) return null
-    return buildSparkline(label, ticker, unit, entries)
-  } catch (err) {
-    console.warn('[market-data] fetchAVCommodity failed:', err instanceof Error ? err.message : err)
-    return null
-  }
+  const url = `https://www.alphavantage.co/query?function=FX_DAILY&from_symbol=${from}&to_symbol=${to}&outputsize=compact&apikey=${AV_KEY}`
+  const json = (await getJson(url, diag, `AlphaVantage ${from}/${to}`)) as Record<string, Record<string, Record<string, string>>> | null
+  const series = json?.['Time Series FX (Daily)']
+  if (!series) return null
+  const data = Object.entries(series)
+    .slice(0, 30).reverse()
+    .map(([date, v]) => toDataPoint(date, parseFloat(v['4. close'])))
+  return buildSparkline(`${from}/${to}`, `${from}/${to}`, '', data)
 }
 
-// ── Financial Modeling Prep ───────────────────────────────────────────────────
-
-async function fetchFMP(symbol: string, label: string, ticker: string): Promise<StoredSparkline | null> {
-  if (!FMP_KEY) return null
-  try {
-    const url = `https://financialmodelingprep.com/api/v3/historical-price-full/${encodeURIComponent(symbol)}?timeseries=30&apikey=${FMP_KEY}`
-    const res = await fetch(url, { cache: 'no-store' })
-    if (!res.ok) return null
-    const json = await res.json()
-    const hist = json.historical?.slice(0, 30).reverse()
-    if (!hist?.length) return null
-    const data = hist.map((d: Record<string, number | string>) => toDataPoint(String(d.date), Number(d.close)))
-    return buildSparkline(label, ticker, '', data)
-  } catch (err) {
-    console.warn('[market-data] fetchFMP failed:', err instanceof Error ? err.message : err)
-    return null
-  }
+async function fetchAVCommodity(fn: string, label: string, ticker: string, unit: string, diag: Diag): Promise<StoredSparkline | null> {
+  if (!AV_KEY) return null
+  const url = `https://www.alphavantage.co/query?function=${fn}&interval=daily&apikey=${AV_KEY}`
+  const json = (await getJson(url, diag, `AlphaVantage ${fn}`)) as { data?: Array<Record<string, string>> } | null
+  const entries = (json?.data ?? [])
+    .filter(d => d.value !== '.' && Number.isFinite(parseFloat(d.value)))
+    .slice(0, 30).reverse()
+    .map(d => toDataPoint(d.date, parseFloat(d.value)))
+  return entries.length >= 2 ? buildSparkline(label, ticker, unit, entries) : null
 }
 
-// ── Waterfall helpers ─────────────────────────────────────────────────────────
+/** FMP first, then (optionally) Alpha Vantage, then Finnhub candles (premium on most plans). */
+async function fetchEquity(
+  symbol: string, label: string, ticker: string, diag: Diag, opts: { alphaVantage?: boolean } = {},
+): Promise<StoredSparkline | null> {
+  const fromFmp = await fetchFMPEod(symbol, label, ticker, diag)
+  if (fromFmp) return fromFmp
+  if (opts.alphaVantage) {
+    const fromAv = await fetchAVDaily(symbol, label, ticker, diag)
+    if (fromAv) return fromAv
+  }
+  const fromFinnhub = await fetchStockCandle(symbol, label, ticker)
+  if (!fromFinnhub) note(diag, `Finnhub ${symbol}: no candle data`)
+  return fromFinnhub
+}
 
 /** Try each async factory in order, return first non-null result */
 async function firstOf<T>(...fns: (() => Promise<T | null>)[]): Promise<T | null> {
@@ -127,56 +140,109 @@ async function firstOf<T>(...fns: (() => Promise<T | null>)[]): Promise<T | null
   return null
 }
 
-// ── Stock / competitor / commodity helpers ────────────────────────────────────
+// ── Ticker lookup ─────────────────────────────────────────────────────────────
 
-/** Fetch any equity by ticker from FMP (30-day history) */
-async function fetchFMPStock(symbol: string, label: string, ticker: string): Promise<StoredSparkline | null> {
-  return fetchFMP(symbol, label, ticker)
+const GENERIC_NAME_WORDS = new Set([
+  'inc', 'corp', 'corporation', 'ltd', 'limited', 'plc', 'llc', 'co', 'company', 'group', 'holdings',
+  'holding', 'technologies', 'technology', 'international', 'partners', 'the', 'and', 'ag', 'sa', 'nv', 'se',
+])
+
+function significantWords(name: string): string[] {
+  return name
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w && !GENERIC_NAME_WORDS.has(w))
 }
 
-/** Look up a company's primary stock ticker via FMP search */
-async function searchFMPTicker(companyName: string): Promise<string | null> {
+/** A ticker the profile supplied, cleaned up ("NYSE:ST" → "ST"), or null. */
+function cleanTicker(raw: string | undefined | null): string | null {
+  if (!raw) return null
+  const t = raw.trim().replace(/^[A-Za-z]+:/, '').toUpperCase()
+  return /^[A-Z0-9][A-Z0-9.\-]{0,11}$/.test(t) ? t : null
+}
+
+interface FmpSearchRow { symbol?: string; name?: string; exchange?: string; exchangeFullName?: string }
+
+/**
+ * Look up a listed company by name. Only a name that really matches is accepted:
+ * charting the wrong company under a competitor's name is worse than no chart.
+ */
+async function searchFMPTicker(companyName: string, diag: Diag): Promise<string | null> {
   if (!FMP_KEY) return null
-  try {
-    // Search across major global exchanges — US, EU, and global listings
-    const url = `https://financialmodelingprep.com/api/v3/search?query=${encodeURIComponent(companyName)}&limit=10&apikey=${FMP_KEY}`
-    const res = await fetch(url, { cache: 'no-store' })
-    if (!res.ok) return null
-    const json = await res.json() as Array<{ symbol: string; name: string; exchangeShortName?: string }>
-    if (!json.length) return null
-    // Prefer US listings first (more liquid data), then any exchange
-    const usHit = json.find(r =>
-      ['NASDAQ','NYSE','AMEX','NYSE AMERICAN'].includes(r.exchangeShortName ?? '') &&
-      r.name.toLowerCase().includes(companyName.toLowerCase().split(' ')[0])
-    )
-    const anyHit = json.find(r =>
-      r.name.toLowerCase().includes(companyName.toLowerCase().split(' ')[0])
-    ) ?? json[0]
-    return (usHit ?? anyHit)?.symbol ?? null
-  } catch (err) {
-    console.warn('[market-data] searchFMPTicker failed:', err instanceof Error ? err.message : err)
+  const words = significantWords(companyName)
+  const primary = words[0]
+  if (!primary || primary.length <= 3) {
+    note(diag, `Ticker lookup skipped for "${companyName.slice(0, 40)}": name too short to match safely (add a ticker in the profile)`)
     return null
   }
+  const url = `${FMP_BASE}/search-name?query=${encodeURIComponent(primary)}&limit=15&apikey=${FMP_KEY}`
+  const json = await getJson(url, diag, `FMP search "${primary}"`)
+  if (!Array.isArray(json)) return null
+  const rows = (json as FmpSearchRow[]).filter(r => r.symbol && r.name)
+  const matches = rows.filter(r => {
+    const candidate = significantWords(r.name ?? '')
+    return candidate[0] === primary && (words.length < 2 || candidate.includes(words[1]) || candidate.length === 1)
+  })
+  const isUS = (r: FmpSearchRow) => /NASDAQ|NYSE|AMEX/i.test(`${r.exchange ?? ''} ${r.exchangeFullName ?? ''}`)
+  const hit = matches.find(isUS) ?? matches[0]
+  if (!hit) note(diag, `Ticker lookup: no listed company named "${companyName.slice(0, 40)}"`)
+  return hit?.symbol ?? null
 }
 
-/** Fetch a sparkline for a commodity name (case-insensitive) */
-async function fetchCommodityByName(name: string): Promise<StoredSparkline | null> {
-  const key = name.toLowerCase().trim()
-  const avEntry = AV_COMMODITY_MAP[key]
-  if (avEntry) {
-    const s = await fetchAVCommodity(avEntry.fn, avEntry.label, avEntry.ticker, avEntry.unit)
+// ── Commodities ───────────────────────────────────────────────────────────────
+
+interface CommodityDef {
+  names: string[]
+  av?: { fn: string; label: string; ticker: string; unit: string }
+  etf?: { symbol: string; label: string; ticker: string }
+}
+
+// Order matters: the first definition whose name appears in a profile entry wins.
+const COMMODITIES: CommodityDef[] = [
+  { names: ['brent'],                       av: { fn: 'BRENT',       label: 'Brent Oil', ticker: 'BRENT', unit: '$/bbl'    }, etf: { symbol: 'BNO',  label: 'Brent (BNO)',        ticker: 'BNO'  } },
+  { names: ['oil', 'crude', 'petroleum'],   av: { fn: 'WTI',         label: 'WTI Oil',   ticker: 'WTI',   unit: '$/bbl'    }, etf: { symbol: 'USO',  label: 'Oil (USO)',          ticker: 'USO'  } },
+  { names: ['natural gas', 'natgas', 'lng'],av: { fn: 'NATURAL_GAS', label: 'Nat. Gas',  ticker: 'NG',    unit: '$/MMBtu'  }, etf: { symbol: 'UNG',  label: 'Nat. Gas (UNG)',     ticker: 'UNG'  } },
+  { names: ['copper'],                      av: { fn: 'COPPER',      label: 'Copper',    ticker: 'HG',    unit: '$/t'      }, etf: { symbol: 'CPER', label: 'Copper (CPER)',      ticker: 'CPER' } },
+  { names: ['aluminium', 'aluminum'],       av: { fn: 'ALUMINUM',    label: 'Aluminium', ticker: 'ALI',   unit: '$/t'      } },
+  { names: ['wheat'],                       av: { fn: 'WHEAT',       label: 'Wheat',     ticker: 'ZW',    unit: ''         }, etf: { symbol: 'WEAT', label: 'Wheat (WEAT)',       ticker: 'WEAT' } },
+  { names: ['corn', 'maize'],               av: { fn: 'CORN',        label: 'Corn',      ticker: 'ZC',    unit: ''         }, etf: { symbol: 'CORN', label: 'Corn (CORN)',        ticker: 'CORN' } },
+  { names: ['cotton'],                      av: { fn: 'COTTON',      label: 'Cotton',    ticker: 'CT',    unit: ''         }, etf: { symbol: 'BAL',  label: 'Cotton (BAL)',       ticker: 'BAL'  } },
+  { names: ['sugar'],                       av: { fn: 'SUGAR',       label: 'Sugar',     ticker: 'SB',    unit: ''         }, etf: { symbol: 'CANE', label: 'Sugar (CANE)',       ticker: 'CANE' } },
+  { names: ['coffee'],                      av: { fn: 'COFFEE',      label: 'Coffee',    ticker: 'KC',    unit: ''         }, etf: { symbol: 'JO',   label: 'Coffee (JO)',        ticker: 'JO'   } },
+  { names: ['gold'],                        etf: { symbol: 'GLD',  label: 'Gold (GLD)',          ticker: 'GLD'  } },
+  { names: ['silver'],                      etf: { symbol: 'SLV',  label: 'Silver (SLV)',        ticker: 'SLV'  } },
+  { names: ['platinum'],                    etf: { symbol: 'PPLT', label: 'Platinum (PPLT)',     ticker: 'PPLT' } },
+  { names: ['palladium'],                   etf: { symbol: 'PALL', label: 'Palladium (PALL)',    ticker: 'PALL' } },
+  { names: ['steel', 'rebar', 'iron ore'],  etf: { symbol: 'SLX',  label: 'Steel (SLX)',         ticker: 'SLX'  } },
+  { names: ['lithium'],                     etf: { symbol: 'LIT',  label: 'Lithium (LIT)',       ticker: 'LIT'  } },
+  { names: ['silicon', 'semiconductor', 'semiconductors', 'chips', 'wafer'], etf: { symbol: 'SOXX', label: 'Semis (SOXX)', ticker: 'SOXX' } },
+  { names: ['rare earth', 'neodymium'],     etf: { symbol: 'REMX', label: 'Rare earth (REMX)',   ticker: 'REMX' } },
+  { names: ['nickel'],                      etf: { symbol: 'NIKL', label: 'Nickel miners (NIKL)', ticker: 'NIKL' } },
+  { names: ['uranium'],                     etf: { symbol: 'URA',  label: 'Uranium (URA)',       ticker: 'URA'  } },
+  { names: ['timber', 'lumber', 'wood'],    etf: { symbol: 'WOOD', label: 'Timber (WOOD)',       ticker: 'WOOD' } },
+  { names: ['soy', 'soybean', 'soybeans'],  etf: { symbol: 'SOYB', label: 'Soybeans (SOYB)',     ticker: 'SOYB' } },
+]
+
+/** "Steel (rebar)" → steel, "Crude Oil (energy costs)" → oil, "Rare earth elements" → rare earth. */
+function resolveCommodity(raw: string): CommodityDef | null {
+  const text = ` ${raw.toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim()} `
+  return COMMODITIES.find(def => def.names.some(n => text.includes(` ${n} `))) ?? null
+}
+
+async function fetchCommodity(def: CommodityDef, diag: Diag): Promise<StoredSparkline | null> {
+  if (def.av) {
+    const s = await fetchAVCommodity(def.av.fn, def.av.label, def.av.ticker, def.av.unit, diag)
     if (s) return s
   }
-  const fmpEntry = FMP_COMMODITY_MAP[key]
-  if (fmpEntry) {
-    return fetchFMP(fmpEntry.symbol, fmpEntry.label, fmpEntry.ticker)
-  }
+  if (def.etf) return fetchEquity(def.etf.symbol, def.etf.label, def.etf.ticker, diag)
   return null
 }
 
-// ── Signal-driven chart maps ──────────────────────────────────────────────────
+// ── Country and sector context ────────────────────────────────────────────────
 
-const SIGNAL_COUNTRY_ETF: Record<string, { symbol: string; label: string }> = {
+const COUNTRY_ETF: Record<string, { symbol: string; label: string }> = {
   'japan':       { symbol: 'EWJ',  label: 'Japan (EWJ)'       },
   'japanese':    { symbol: 'EWJ',  label: 'Japan (EWJ)'       },
   'germany':     { symbol: 'EWG',  label: 'Germany (EWG)'     },
@@ -196,11 +262,19 @@ const SIGNAL_COUNTRY_ETF: Record<string, { symbol: string; label: string }> = {
   'australian':  { symbol: 'EWA',  label: 'Australia (EWA)'   },
   'mexico':      { symbol: 'EWW',  label: 'Mexico (EWW)'      },
   'swiss':       { symbol: 'EWL',  label: 'Switzerland (EWL)' },
+  'switzerland': { symbol: 'EWL',  label: 'Switzerland (EWL)' },
   'israel':      { symbol: 'EIS',  label: 'Israel (EIS)'      },
   'israeli':     { symbol: 'EIS',  label: 'Israel (EIS)'      },
   'china':       { symbol: 'MCHI', label: 'China (MCHI)'      },
   'chinese':     { symbol: 'MCHI', label: 'China (MCHI)'      },
   'singapore':   { symbol: 'EWS',  label: 'Singapore (EWS)'   },
+  'united kingdom': { symbol: 'EWU', label: 'UK (EWU)'         },
+  'italy':       { symbol: 'EWI',  label: 'Italy (EWI)'       },
+  'spain':       { symbol: 'EWP',  label: 'Spain (EWP)'       },
+  'netherlands': { symbol: 'EWN',  label: 'Netherlands (EWN)' },
+  'poland':      { symbol: 'EPOL', label: 'Poland (EPOL)'     },
+  'turkey':      { symbol: 'TUR',  label: 'Turkey (TUR)'      },
+  'vietnam':     { symbol: 'VNM',  label: 'Vietnam (VNM)'     },
 }
 
 const SIGNAL_SECTOR_ETF: Array<{ keywords: string[]; symbol: string; label: string; key: string }> = [
@@ -214,15 +288,33 @@ const SIGNAL_SECTOR_ETF: Array<{ keywords: string[]; symbol: string; label: stri
   { keywords: ['cybersecurity', 'ransomware', 'data breach', 'cyber attack'],                symbol: 'HACK', label: 'Cyber (HACK)',        key: 'signal_cyber'    },
 ]
 
+/** Country ETFs for the countries a company buys from (up to `max`), by profile name. */
+function supplierCountryETFs(countryNames: string[], max: number): Array<{ symbol: string; label: string; key: string }> {
+  const picked: Array<{ symbol: string; label: string; key: string }> = []
+  const seen = new Set<string>()
+  for (const country of countryNames) {
+    const lowered = country.toLowerCase()
+    const term = Object.keys(COUNTRY_ETF).find(t => lowered.includes(t))
+    if (!term) continue
+    const etf = COUNTRY_ETF[term]
+    if (seen.has(etf.symbol)) continue
+    seen.add(etf.symbol)
+    picked.push({ ...etf, key: `supplier_${etf.symbol.toLowerCase()}` })
+    if (picked.length >= max) break
+  }
+  return picked
+}
+
 function pickSignalDrivenCharts(
   signals: string,
   profileCountriesLower: string[],
+  alreadyUsed: Set<string>,
 ): { countryETFs: Array<{ symbol: string; label: string; key: string }>; sectorETF: { symbol: string; label: string; key: string } | null } {
   const lower = signals.toLowerCase()
-  const seenSymbols = new Set<string>()
+  const seenSymbols = new Set(alreadyUsed)
   const countryETFs: Array<{ symbol: string; label: string; key: string }> = []
 
-  for (const [term, etf] of Object.entries(SIGNAL_COUNTRY_ETF)) {
+  for (const [term, etf] of Object.entries(COUNTRY_ETF)) {
     if (seenSymbols.has(etf.symbol)) continue
     if (profileCountriesLower.some(c => c.includes(term.split(' ')[0]))) continue
     if (lower.includes(term)) {
@@ -243,190 +335,180 @@ function pickSignalDrivenCharts(
   return { countryETFs, sectorETF }
 }
 
+// ── Peers (competitors, customers) ────────────────────────────────────────────
+
+interface Peer { name: string; ticker?: string }
+
+async function peerChart(kind: 'competitor' | 'customer', peer: Peer, diag: Diag): Promise<[string, StoredSparkline] | null> {
+  if (!peer.name) return null
+  const symbol = cleanTicker(peer.ticker) ?? (await searchFMPTicker(peer.name, diag))
+  if (!symbol) return null
+  const series = await fetchEquity(symbol, peer.name, symbol, diag)
+  if (!series) return null
+  const slug = peer.name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 20)
+  return [`${kind}_${slug}`, series]
+}
+
+/** Work through the list in small batches until `want` charts are found. */
+async function collectPeers(
+  kind: 'competitor' | 'customer', peers: Peer[], want: number, diag: Diag, deadline: number,
+): Promise<Record<string, StoredSparkline>> {
+  const out: Record<string, StoredSparkline> = {}
+  for (let i = 0; i < peers.length && Object.keys(out).length < want; i += 3) {
+    if (Date.now() > deadline) { note(diag, `${kind} charts stopped early: time budget used`); break }
+    const batch = peers.slice(i, i + 3)
+    const results = await Promise.all(batch.map(p => peerChart(kind, p, diag).catch(() => null)))
+    for (const r of results) {
+      if (r && Object.keys(out).length < want) out[r[0]] = r[1]
+    }
+  }
+  return out
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 interface MarketDataOptions {
   stockTicker?: string | null
   companyName?: string
-  competitors?: Array<{ name: string }>
+  competitors?: Array<{ name: string; ticker?: string }>
   commodities?: string[]
   locationCountryNames?: string[]
-  customers?: Array<{ name: string }>
+  supplierCountryNames?: string[]
+  customers?: Array<{ name: string; ticker?: string }>
   signals?: string
+  /** Collects short, key-free provider messages explaining any missing series. */
+  diag?: string[]
 }
 
 export async function fetchLiveMarketData(
   revenueCountryNames: string[],
   options: MarketDataOptions = {}
 ): Promise<Record<string, StoredSparkline>> {
-  const allCountries = [...revenueCountryNames, ...(options.locationCountryNames ?? [])]
+  const diag = options.diag
+  const deadline = Date.now() + 90_000
+  const allCountries = [...revenueCountryNames, ...(options.locationCountryNames ?? []), ...(options.supplierCountryNames ?? [])]
   const lower    = allCountries.map(c => c.toLowerCase())
   const hasUK    = lower.some(c => c.includes('uk') || c.includes('united kingdom'))
   const hasJapan = lower.some(c => c.includes('japan'))
   const hasChina = lower.some(c => c.includes('china'))
   const hasIsrael = lower.some(c => c.includes('israel'))
 
+  const snapshots: Record<string, StoredSparkline> = {}
+
   // ── Wave 1: indices + USD ─────────────────────────────────────────────────
-  // Finnhub primary (60/min), FMP/AV fallback
+  // The S&P 500 and MSCI World charts are the SPY and URTH ETFs, and are labelled as such.
   const [sp500, dxy, eurusd, oil] = await Promise.all([
-    firstOf(
-      () => fetchStockCandle('SPY',       'S&P 500',   'SPX'),
-      () => fetchFMP('^GSPC',             'S&P 500',   'SPX'),
-    ),
+    fetchEquity('SPY', 'S&P 500 (SPY)', 'SPY', diag, { alphaVantage: true }),
     firstOf(
       () => fetchForexCandle('OANDA:USD_INDEX', 'USD Index', 'DXY'),
       () => fetchFREDSparkline('dxy'),
-      () => fetchFMP('DX-Y.NYB',          'USD Index', 'DXY'),
     ),
     firstOf(
       () => fetchForexCandle('OANDA:EUR_USD', 'EUR/USD', '€/$'),
       () => fetchFREDSparkline('eurusd'),
-      () => fetchAVFX('EUR', 'USD'),
+      () => fetchAVFX('EUR', 'USD', diag),
     ),
     firstOf(
       () => fetchFREDSparkline('oil'),
-      () => fetchAVCommodity('WTI', 'WTI Oil', 'WTI', '$/bbl'),
+      () => fetchAVCommodity('WTI', 'WTI Oil', 'WTI', '$/bbl', diag),
     ),
   ])
+  if (sp500) snapshots['sp500'] = sp500
+  if (dxy) snapshots['dxy'] = dxy
+  if (eurusd) snapshots['eurusd'] = eurusd
+  if (oil) snapshots['oil'] = oil
 
-  // ── Small gap to respect Alpha Vantage 5/min ──────────────────────────────
-  await new Promise(r => setTimeout(r, 1200))
+  await sleep(600)
 
-  // ── Wave 2: MSCI, gold, FX optionals ─────────────────────────────────────
+  // ── Wave 2: MSCI, gold, FX for the countries the company touches ──────────
   const [msci, gold, gbpusd, usdjpy, usdcny, usdils] = await Promise.all([
-    firstOf(
-      () => fetchStockCandle('URTH',     'MSCI World', 'MXWO'),
-      () => fetchFMP('URTH',             'MSCI World', 'MXWO'),
-    ),
-    firstOf(
-      () => fetchFREDSparkline('gold'),
-      () => fetchAVCommodity('GOLD', 'Gold', 'XAU', '$/oz'),
-    ),
+    fetchEquity('URTH', 'MSCI World (URTH)', 'URTH', diag),
+    fetchEquity('GLD', 'Gold (GLD)', 'GLD', diag),
     hasUK ? firstOf(
       () => fetchForexCandle('OANDA:GBP_USD', 'GBP/USD', '£/$'),
       () => fetchFREDSparkline('gbpusd'),
-      () => fetchAVFX('GBP', 'USD'),
+      () => fetchAVFX('GBP', 'USD', diag),
     ) : Promise.resolve(null),
     hasJapan ? firstOf(
       () => fetchForexCandle('OANDA:USD_JPY', 'USD/JPY', '$/¥'),
       () => fetchFREDSparkline('usdjpy'),
-      () => fetchAVFX('USD', 'JPY'),
+      () => fetchAVFX('USD', 'JPY', diag),
     ) : Promise.resolve(null),
     hasChina ? firstOf(
       () => fetchForexCandle('OANDA:USD_CNH', 'USD/CNH', '$/CNH'),
       () => fetchFREDSparkline('usdcny'),
-      () => fetchAVFX('USD', 'CNY'),
+      () => fetchAVFX('USD', 'CNY', diag),
     ) : Promise.resolve(null),
     hasIsrael ? firstOf(
       () => fetchForexCandle('OANDA:USD_ILS', 'USD/ILS', '$/₪'),
-      () => fetchAVFX('USD', 'ILS'),
+      () => fetchAVFX('USD', 'ILS', diag),
     ) : Promise.resolve(null),
   ])
+  if (msci) snapshots['msci'] = msci
+  if (gold) snapshots['gold'] = gold
+  if (gbpusd) snapshots['gbpusd'] = gbpusd
+  if (usdjpy) snapshots['usdjpy'] = usdjpy
+  if (usdcny) snapshots['usdcny'] = usdcny
+  if (usdils) snapshots['usdils'] = usdils
 
-  const all  = [sp500, dxy, eurusd, oil, msci, gold, gbpusd, usdjpy, usdcny, usdils]
-  const keys = ['sp500', 'dxy', 'eurusd', 'oil', 'msci', 'gold', 'gbpusd', 'usdjpy', 'usdcny', 'usdils']
+  // ── Wave 3: the company itself, competitors, and the commodities it depends on ──
+  const { stockTicker, companyName, competitors = [], commodities = [], customers = [], signals = '' } = options
 
-  const snapshots: Record<string, StoredSparkline> = {}
-  all.forEach((s, i) => { if (s) snapshots[keys[i]] = s })
-
-  // ── Wave 3: company stock, competitor stocks, commodities ─────────────────
-  await new Promise(r => setTimeout(r, 800))
-
-  const { stockTicker, companyName, competitors = [], commodities = [] } = options
-
-  // Company stock
-  if (stockTicker) {
-    const s = await firstOf(
-      () => fetchStockCandle(stockTicker, companyName ?? stockTicker, stockTicker),
-      () => fetchFMPStock(stockTicker, companyName ?? stockTicker, stockTicker),
-    )
+  if (stockTicker && Date.now() < deadline) {
+    const s = await fetchEquity(stockTicker, companyName ?? stockTicker, stockTicker, diag, { alphaVantage: true })
     if (s) snapshots['company_stock'] = s
   }
 
-  // Competitor stocks (up to 3, auto-lookup ticker via FMP search)
-  await Promise.allSettled(
-    competitors.slice(0, 3).map(async (comp) => {
-      try {
-        const ticker = await searchFMPTicker(comp.name)
-        if (!ticker) return
-        const s = await firstOf(
-          () => fetchStockCandle(ticker, comp.name, ticker),
-          () => fetchFMPStock(ticker, comp.name, ticker),
-        )
-        if (s) {
-          const key = `competitor_${comp.name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 20)}`
-          snapshots[key] = s
-        }
-      } catch (err) {
-        console.warn('[market-data] competitor lookup failed for', comp.name, ':', err instanceof Error ? err.message : err)
-      }
-    })
-  )
+  if (Date.now() < deadline) {
+    Object.assign(snapshots, await collectPeers('competitor', competitors.slice(0, 8), 3, diag, deadline))
+  }
 
-  // Profile commodities (up to 4)
-  const topCommodities = commodities.slice(0, 4)
-  for (const name of topCommodities) {
-    const key = name.toLowerCase().trim()
-    if (['oil', 'crude', 'gold'].includes(key) && snapshots['oil'] && key !== 'gold') continue
-    if (key === 'gold' && snapshots['gold']) continue
-    const s = await fetchCommodityByName(name)
+  // Up to 4 commodity charts, trying up to 8 profile entries (many entries, such as
+  // "Concrete" or "Glass", have no public price series).
+  const wantedCommodities = new Set<CommodityDef>()
+  let commodityAttempts = 0
+  for (const name of commodities) {
+    if (wantedCommodities.size >= 4 || commodityAttempts >= 8 || Date.now() > deadline) break
+    const def = resolveCommodity(name)
+    if (!def || wantedCommodities.has(def)) continue
+    commodityAttempts++
+    // Oil is already charted in the macro wave; gold likewise.
+    if (def.av?.fn === 'WTI' && snapshots['oil']) { wantedCommodities.add(def); continue }
+    if (def.etf?.symbol === 'GLD' && snapshots['gold']) { wantedCommodities.add(def); continue }
+    const s = await fetchCommodity(def, diag)
     if (s) {
-      const snapKey = `commodity_${key.replace(/[^a-z0-9]/g, '_').slice(0, 20)}`
-      snapshots[snapKey] = s
+      wantedCommodities.add(def)
+      snapshots[`commodity_${(def.names[0]).replace(/[^a-z0-9]/g, '_')}`] = s
+    } else {
+      note(diag, `No price series available for commodity "${name.slice(0, 30)}"`)
     }
   }
 
-  // ── Wave 4: customer stocks + signal-driven contextual charts ────────────
-  await new Promise(r => setTimeout(r, 800))
+  // ── Wave 4: customers, supplier countries, and what the news is about this week ──
+  if (Date.now() < deadline) {
+    Object.assign(snapshots, await collectPeers('customer', customers.slice(0, 8), 3, diag, deadline))
+  }
 
-  const { customers = [], signals = '' } = options
+  const usedEtfSymbols = new Set<string>()
+  for (const etf of supplierCountryETFs(options.supplierCountryNames ?? [], 3)) {
+    if (Date.now() > deadline) break
+    usedEtfSymbols.add(etf.symbol)
+    const s = await fetchEquity(etf.symbol, etf.label, etf.symbol, diag)
+    if (s) snapshots[etf.key] = s
+  }
 
-  // Customer stocks — same pattern as competitor stocks
-  await Promise.allSettled(
-    customers.slice(0, 3).map(async (cust) => {
-      if (!cust.name) return
-      try {
-        const ticker = await searchFMPTicker(cust.name)
-        if (!ticker) return
-        const s = await firstOf(
-          () => fetchStockCandle(ticker, cust.name, ticker),
-          () => fetchFMPStock(ticker, cust.name, ticker),
-        )
-        if (s) {
-          const key = `customer_${cust.name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 20)}`
-          snapshots[key] = s
-        }
-      } catch (err) {
-        console.warn('[market-data] customer lookup failed for', cust.name, ':', err instanceof Error ? err.message : err)
-      }
-    })
-  )
-
-  // Signal-driven charts: country ETFs + one sector ETF based on what's in the news this week
-  if (signals) {
-    const { countryETFs, sectorETF } = pickSignalDrivenCharts(signals, lower)
-
+  if (signals && Date.now() < deadline) {
+    const { countryETFs, sectorETF } = pickSignalDrivenCharts(signals, lower, usedEtfSymbols)
     for (const etf of countryETFs) {
-      try {
-        const s = await firstOf(
-          () => fetchStockCandle(etf.symbol, etf.label, etf.symbol),
-          () => fetchFMPStock(etf.symbol, etf.label, etf.symbol),
-        )
-        if (s) snapshots[etf.key] = s
-      } catch { /* skip */ }
+      const s = await fetchEquity(etf.symbol, etf.label, etf.symbol, diag)
+      if (s) snapshots[etf.key] = s
     }
-
     if (sectorETF) {
-      try {
-        const s = await firstOf(
-          () => fetchStockCandle(sectorETF.symbol, sectorETF.label, sectorETF.symbol),
-          () => fetchFMPStock(sectorETF.symbol, sectorETF.label, sectorETF.symbol),
-        )
-        if (s) snapshots[sectorETF.key] = s
-      } catch { /* skip */ }
+      const s = await fetchEquity(sectorETF.symbol, sectorETF.label, sectorETF.symbol, diag)
+      if (s) snapshots[sectorETF.key] = s
     }
   }
 
-  console.log(`[market-data] Fetched ${Object.keys(snapshots).length} live series`)
+  console.log(`[market-data] Fetched ${Object.keys(snapshots).length} live series${diag?.length ? `; ${diag.length} provider notes, e.g. ${diag.slice(0, 3).join(' | ')}` : ''}`)
   return snapshots
 }

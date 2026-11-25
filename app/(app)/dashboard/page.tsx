@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { getSessionCompanyId } from '@/lib/get-company'
 import HistoricDashboard from '@/components/dashboard/HistoricDashboard'
+import { orderSnapshots } from '@/lib/market-order'
 import type { BriefAggregate } from '@/components/dashboard/HistoricDashboard'
 import type { BriefContent, TrendInsights } from '@/lib/types'
 
@@ -89,6 +90,12 @@ export default async function DashboardPage() {
       maCount:              (c.ma_watch ?? []).length,
       scenarioCount:        (c.scenario_modeling ?? []).length,
       decisionCount:        decisions.length,
+      marketRows:           orderSnapshots(snaps, 8).map(o => ({
+        label: o.series.label,
+        ticker: o.series.ticker,
+        value: o.series.current.toLocaleString('en-US', { maximumFractionDigits: 2 }),
+        pct: o.series.pct,
+      })),
       sp500:                snaps['sp500']?.current ?? null,
       dxy:                  snaps['dxy']?.current   ?? null,
       gold:                 snaps['gold']?.current  ?? null,

@@ -6,7 +6,8 @@ import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import Image from 'next/image'
 import type { BriefContent, RiskItem, Scenario, MarketingOpportunityItem, FinancialSignalItem, OperationalAlert, TechIntelItem, HRIntelItem, MAItem, CustomerIntelItem, CompanyNewsItem } from '@/lib/types'
 import { getFlag } from '@/lib/flags'
-import { MACRO_CHARTS, SPARKLINES, CFO_CHART_MAP } from '@/lib/market-data'
+import { CFO_CHART_MAP } from '@/lib/market-data'
+import { orderSnapshots } from '@/lib/market-order'
 import type { StoredSparkline, SWOTItem } from '@/lib/types'
 import MarketMiniChart from './MarketMiniChart'
 import BriefTOC, { AUDIENCE_COLORS, type TOCSection } from './BriefTOC'
@@ -644,37 +645,16 @@ export default function BriefViewer({
     return allowed.includes(audience)
   }
 
-  // Prefer real stored snapshots; fall back to simulated
+  // Real stored snapshots only: nothing is ever simulated.
   function getChart(key: string): StoredSparkline | undefined {
-    return (content.market_snapshots?.[key] ?? SPARKLINES[key]) as StoredSparkline | undefined
+    return content.market_snapshots?.[key] as StoredSparkline | undefined
   }
-  // Company stock + competitor stocks + commodity charts from market_snapshots
-  const companyStockChart = content.market_snapshots?.['company_stock'] as StoredSparkline | undefined
-  const competitorCharts = Object.entries(content.market_snapshots ?? {})
-    .filter(([k]) => k.startsWith('competitor_'))
-    .map(([, v]) => v as StoredSparkline)
-  const commodityCharts = Object.entries(content.market_snapshots ?? {})
-    .filter(([k]) => k.startsWith('commodity_'))
-    .map(([, v]) => v as StoredSparkline)
-
-  // Build personalized masthead: company-specific first, then macro fills
-  // Priority: company stock > competitors > commodities > relevant FX > macro
-  const fxKeys = ['eurusd', 'gbpusd', 'usdjpy', 'usdcny', 'usdils']
-  const fxCharts = fxKeys
-    .map(k => content.market_snapshots?.[k] as StoredSparkline | undefined)
-    .filter(Boolean) as StoredSparkline[]
-  const fxSorted = [...fxCharts].sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct))
-  const macroFills = ['sp500', 'dxy', 'gold', 'oil']
-    .map(k => getChart(k))
-    .filter(Boolean) as StoredSparkline[]
-  const mastheadCharts: StoredSparkline[] = [
-    ...(companyStockChart ? [companyStockChart] : []),
-    ...competitorCharts.slice(0, 3),
-    ...commodityCharts.slice(0, 3),
-    ...fxSorted.slice(0, 2),
-    ...macroFills,
-  ].slice(0, 8)
-  const mastheadFinal = mastheadCharts.length >= 2 ? mastheadCharts : MACRO_CHARTS
+  // Company-specific series first (own stock, competitors, customers, inputs and
+  // exposure), then macro. Only real stored series; see lib/market-order.ts.
+  const mastheadFinal: StoredSparkline[] = orderSnapshots(
+    content.market_snapshots as Record<string, StoredSparkline> | undefined,
+    14,
+  ).map(o => o.series)
 
   const allowedAudiences = ROLE_MAP[roleFilter]
   const allTocSections: TOCSection[] = [
@@ -968,7 +948,7 @@ export default function BriefViewer({
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="text-[10px] text-gray-300">
-                    {content.market_snapshots ? '✓ Live' : '⚠ Simulated'}
+                    ✓ Live
                   </span>
                   <svg
                     className={`w-4 h-4 text-gray-400 transition-transform ${tickerExpanded ? 'rotate-180' : ''}`}
@@ -981,7 +961,7 @@ export default function BriefViewer({
               {tickerExpanded && (
                 <div className="border-t border-gray-100 p-4">
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
-                    {[...mastheadFinal, ...competitorCharts, ...commodityCharts].map((s, i) => (
+                    {mastheadFinal.map((s, i) => (
                       <MarketMiniChart
                         key={`${s.ticker}-${i}`}
                         sparkline={s as Parameters<typeof MarketMiniChart>[0]['sparkline']}
