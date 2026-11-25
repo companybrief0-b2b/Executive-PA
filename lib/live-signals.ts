@@ -6,6 +6,7 @@ import { buildCountrySignals } from './country-signals'
 import { buildEdgarSignals } from './sec-edgar'
 import { buildResearchSignals } from './research'
 import { buildPatentSignals } from './patents'
+import { buildRegulatorySignals, buildHazardSignals } from './public-signals'
 import { createClient } from '@supabase/supabase-js'
 
 const NEWS_API_BASE = 'https://newsapi.org/v2/everything'
@@ -393,6 +394,19 @@ export async function buildLiveSignals(company: Company, profile: CompanyProfile
   ])
   if (research) lines.push('\n' + research)
   if (patents) lines.push('\n' + patents)
+
+  // ── Public-sector sources: US regulatory watch + natural-hazard alerts ───
+  const exposureCountries = [
+    ...profile.revenue_countries.map(r => r.country),
+    ...(profile.supplier_countries ?? []).map(s => s.country),
+    ...locations.map(l => l.country_name),
+  ]
+  const [regulatory, hazards] = await Promise.all([
+    buildRegulatorySignals(company, profile, locations).catch(() => ''),
+    buildHazardSignals(exposureCountries).catch(() => ''),
+  ])
+  if (regulatory) lines.push('\n' + regulatory)
+  if (hazards) lines.push('\n' + hazards)
 
   const result = lines.join('\n')
   console.log(`[signals] Fetched live signals: ${result.length} chars`)
