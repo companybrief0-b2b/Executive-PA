@@ -248,7 +248,9 @@ export function markCoveredItems(content: BriefContent, opts: { companyName?: st
       let shared = 0
       for (const w of words) if (story.words.has(w)) shared++
       const ratio = shared / words.size
-      if ((shared >= 3 && ratio >= 0.5) || (shared >= 2 && words.size <= 4 && ratio >= 0.75)) return story.id
+      // Short headlines need most of their words to match; long, sentence-length items
+      // (opportunities, rationales) share fewer of theirs but still repeat the story.
+      if ((shared >= 3 && ratio >= 0.5) || (shared >= 2 && words.size <= 4 && ratio >= 0.75) || (shared >= 5 && ratio >= 0.3) || (shared >= 6 && ratio >= 0.25)) return story.id
     }
     return null
   }
