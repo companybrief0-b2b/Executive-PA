@@ -31,9 +31,11 @@ interface Props {
   briefId: string
   actions: WeeklyAction[]
   userRole?: string | null
+  /** Start closed (the stories above already show each action). */
+  defaultCollapsed?: boolean
 }
 
-export default function ActionItemsPanel({ briefId, actions, userRole }: Props) {
+export default function ActionItemsPanel({ briefId, actions, userRole, defaultCollapsed = false }: Props) {
   const storageKey   = `actions-done-${briefId}`
   const customKey    = `actions-custom-${briefId}`
   const deletedKey   = `actions-deleted-${briefId}`
@@ -41,7 +43,7 @@ export default function ActionItemsPanel({ briefId, actions, userRole }: Props) 
   const roleKey      = `actions-role-${briefId}`
 
   const [done, setDone]           = useState<Set<string>>(new Set())
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(defaultCollapsed)
   const [editMode, setEditMode]   = useState(false)
   const [customActions, setCustomActions] = useState<CustomAction[]>([])
   const [deletedIds, setDeletedIds]       = useState<Set<string>>(new Set())

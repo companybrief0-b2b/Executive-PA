@@ -33,7 +33,11 @@ const SEVERITY_COLOR: Record<string, string> = {
 export function BriefDigestEmail({
   companyName, weekOf, generatedAt, briefUrl, content, brandColor, logoUrl,
 }: Props) {
-  const preview = `${content.headline} — ${strip(content.executive_summary).slice(0, 120)}…`
+  const stories = content.stories ?? []
+  const hasStories = stories.length > 0
+  // With stories, the one-sentence verdict leads; the summary is derived from the same stories.
+  const lead = strip(hasStories && content.tldr ? content.tldr : content.executive_summary)
+  const preview = `${content.headline} — ${lead.slice(0, 120)}…`
 
   return (
     <Html lang="en">
@@ -68,7 +72,7 @@ export function BriefDigestEmail({
               {content.headline}
             </Heading>
             <Text style={{ fontSize: 13, color: '#374151', lineHeight: 1.7, margin: '0 0 8px', borderLeft: `3px solid ${brandColor}`, paddingLeft: 12 }}>
-              {strip(content.executive_summary)}
+              {lead}
             </Text>
             <Text style={{ fontSize: 10, color: '#9ca3af', margin: '8px 0 0' }}>
               🕐 Generated {new Date(generatedAt).toLocaleString('en-GB', {
@@ -79,9 +83,31 @@ export function BriefDigestEmail({
           </Section>
 
           <Hr style={{ borderColor: '#e5e7eb', margin: '0 28px' }} />
+          {/* ── Stories ────────────────────────────────────────────────── */}
+          {hasStories && (
+            <Section style={{ backgroundColor: '#ffffff', padding: '20px 28px 4px' }}>
+              <Text style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6b7280', margin: '0 0 14px' }}>
+                This week&apos;s stories
+              </Text>
+              {stories.map((story, i) => (
+                <Section key={story.id} style={{ borderLeft: `3px solid ${SEVERITY_COLOR[story.impact] ?? '#6b7280'}`, paddingLeft: 12, marginBottom: 18 }}>
+                  <Text style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#9ca3af', margin: '0 0 3px' }}>
+                    {i + 1} · {story.kicker}
+                  </Text>
+                  <Text style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', lineHeight: 1.35, margin: '0 0 6px' }}>{story.title}</Text>
+                  <Text style={{ fontSize: 12, color: '#374151', lineHeight: 1.6, margin: '0 0 4px' }}>{strip(story.what)}</Text>
+                  <Text style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.6, margin: '0 0 6px' }}>{strip(story.why)}</Text>
+                  <Text style={{ fontSize: 12, color: '#0f172a', lineHeight: 1.5, margin: 0 }}>
+                    <strong style={{ color: brandColor }}>Do this · {story.owner}{story.by_when ? ` · ${story.by_when}` : ''}:</strong> {story.action}
+                  </Text>
+                </Section>
+              ))}
+            </Section>
+          )}
+
 
           {/* ── SWOT snapshot ──────────────────────────────────────────── */}
-          {content.swot && (
+          {!hasStories && content.swot && (
             <Section style={{ backgroundColor: '#ffffff', padding: '20px 28px' }}>
               <Text style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6b7280', margin: '0 0 12px' }}>
                 SWOT Snapshot
@@ -108,10 +134,10 @@ export function BriefDigestEmail({
             </Section>
           )}
 
-          <Hr style={{ borderColor: '#e5e7eb', margin: '0 28px' }} />
+          {!hasStories && <Hr style={{ borderColor: '#e5e7eb', margin: '0 28px' }} />}
 
           {/* ── Top Risks ──────────────────────────────────────────────── */}
-          {content.risk_summary?.length > 0 && (
+          {!hasStories && content.risk_summary?.length > 0 && (
             <Section style={{ backgroundColor: '#ffffff', padding: '20px 28px' }}>
               <Text style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6b7280', margin: '0 0 12px' }}>
                 Risk Register
@@ -130,10 +156,10 @@ export function BriefDigestEmail({
             </Section>
           )}
 
-          <Hr style={{ borderColor: '#e5e7eb', margin: '0 28px' }} />
+          {!hasStories && <Hr style={{ borderColor: '#e5e7eb', margin: '0 28px' }} />}
 
           {/* ── Competitor moves ───────────────────────────────────────── */}
-          {content.competitor_intelligence?.length > 0 && (
+          {!hasStories && content.competitor_intelligence?.length > 0 && (
             <Section style={{ backgroundColor: '#ffffff', padding: '20px 28px' }}>
               <Text style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6b7280', margin: '0 0 12px' }}>
                 Competitor Moves
@@ -150,10 +176,10 @@ export function BriefDigestEmail({
             </Section>
           )}
 
-          <Hr style={{ borderColor: '#e5e7eb', margin: '0 28px' }} />
+          {!hasStories && <Hr style={{ borderColor: '#e5e7eb', margin: '0 28px' }} />}
 
           {/* ── Decision framing ───────────────────────────────────────── */}
-          {content.decision_framing?.length > 0 && (
+          {!hasStories && content.decision_framing?.length > 0 && (
             <Section style={{ backgroundColor: '#ffffff', padding: '20px 28px' }}>
               <Text style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6b7280', margin: '0 0 12px' }}>
                 Decisions This Week

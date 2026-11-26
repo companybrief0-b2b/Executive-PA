@@ -16,7 +16,7 @@ export const CITED_SECTIONS = [
 
 const URL_TOKEN = /\[URL:\s*([^\]\s]+)\s*\]/g
 
-function normaliseUrl(url: string): string {
+export function normaliseUrl(url: string): string {
   return url.trim().replace(/[)\].,;]+$/, '').replace(/\/+$/, '').toLowerCase()
 }
 

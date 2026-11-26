@@ -309,11 +309,60 @@ export interface InternalIntelItem {
   urgency: 'high' | 'medium' | 'low'
 }
 
+
+// ── Stories — each event of the week is written once, here ──────────────────
+// The narrative call returns stories; the older lists (risk register, actions,
+// decisions, scenarios, summary) are derived from them in code (lib/stories.ts),
+// so the same event is never re-written in several places.
+
+export type StoryKind = 'risk' | 'opportunity' | 'watch'
+
+export interface StorySource {
+  url: string
+  label: string
+}
+
+export interface StoryDecision {
+  question: string
+  options: { label: string; trade_off: string }[]
+  /** The model's recommendation, when the evidence favours one option. */
+  lean?: string
+}
+
+export interface Story {
+  id: string
+  kind: StoryKind
+  /** Topic label shown above the title, e.g. "Competitor", "Regulation". */
+  kicker: string
+  /** Wire-service headline for the event. */
+  title: string
+  /** What happened: the fact, the number, the named actor. */
+  what: string
+  /** Why it matters to this company specifically. */
+  why: string
+  /** The one thing to do about it. */
+  action: string
+  owner: 'CEO' | 'CFO' | 'CMO' | 'CTO' | 'CBPO' | 'VP HR' | 'All'
+  by_when?: string
+  impact: 'high' | 'medium' | 'low'
+  timeframe: 'immediate' | 'near-term' | 'long-term'
+  decision?: StoryDecision
+  /** What it costs if nothing is done. */
+  downside?: string
+  downside_likelihood?: 'low' | 'medium' | 'high'
+  /** Verified links (resolved from reference ids; never typed by the model). */
+  sources?: StorySource[]
+}
+
 export interface BriefContent {
   /** Short provider messages explaining any market series that could not be fetched. */
   market_data_notes?: string[]
   /** How many insight items carry a verified source link (set at generation time). */
   citation_stats?: { items: number; cited: number; removed: number }
+  /** The week's main events, each written once. Absent on briefs made before stories existed. */
+  stories?: Story[]
+  /** "section:index" → story id, for radar items that repeat a story (kept, but not shown again). */
+  story_coverage?: Record<string, string>
   headline: string
   tldr?: string
   sector_tags?: string[]        // e.g. ["fintech", "regulation", "AI"]

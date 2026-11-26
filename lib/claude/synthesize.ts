@@ -13,6 +13,7 @@ import { buildInternalSignals } from '@/lib/internal-signals'
 import { formatIRBlock } from '@/lib/investor-relations'
 import { computeWhatChanged } from './what-changed'
 import { assignSourceRefs, resolveSourceRefs, dropFillerItems } from '@/lib/citations'
+import { normaliseStories, deriveFromStories, resolveStorySources, markCoveredItems } from '@/lib/stories'
 import { supabaseAdmin as supabase } from '@/lib/supabase/server'
 import type { Company, CompanyProfile, BriefContent } from '@/lib/types'
 
@@ -109,15 +110,14 @@ export async function synthesizeBrief(
     const prev = prevBriefs[0]
     const prevContent = prev.content as BriefContent
     previousBriefContent = prevContent
-    const riskTitles = (prevContent.risk_summary ?? [])
-      .slice(0, 4)
-      .map((r: { title: string }) => `  - ${r.title}`)
-      .join('\n')
+    const covered = prevContent.stories?.length
+      ? prevContent.stories.map(st => `  - ${st.title}`).join('\n')
+      : (prevContent.risk_summary ?? []).slice(0, 4).map((r: { title: string }) => `  - ${r.title}`).join('\n')
     previousBriefContext = [
       `Week of ${prev.week_of}`,
       `Headline: ${prevContent.headline ?? '(none)'}`,
       `TLDR: ${prevContent.tldr ?? '(none)'}`,
-      riskTitles ? `Risks flagged:\n${riskTitles}` : '',
+      covered ? `Stories covered:\n${covered}` : '',
     ].filter(Boolean).join('\n')
   }
 
@@ -173,7 +173,7 @@ export async function synthesizeBrief(
   const slices: BriefSlice[] = [
     {
       name: 'narrative', prompt: buildNarrativeUserPrompt(...argsForSlices), maxTokens: 6000,
-      requiredKeys: ['headline', 'sector_tags', 'region_tags', 'urgency', 'read_time', 'tldr', 'executive_summary', 'so_what', 'risk_summary', 'capital_impact', 'decision_framing', 'scenario_modeling', 'weekly_actions'],
+      requiredKeys: ['headline', 'sector_tags', 'region_tags', 'urgency', 'read_time', 'tldr', 'stories', 'capital_impact'],
     },
     {
       name: 'market_intelligence', prompt: buildMarketUserPrompt(...argsForSlices), maxTokens: 6000,
@@ -206,6 +206,22 @@ export async function synthesizeBrief(
 
   const content = Object.assign({}, ...results.map(r => r.brief)) as BriefContent
 
+  // Each event is written once, as a story. The risk register, actions, decisions,
+  // scenarios and summary are derived from the stories (lib/stories.ts).
+  let stories = normaliseStories((content as unknown as { stories?: unknown }).stories)
+  if (stories.length === 0) {
+    // One retry of just the narrative call before giving up on the brief.
+    console.warn('[synthesize] narrative returned no usable stories; retrying that call once')
+    const retry = await generateSlice(slices[0])
+    Object.assign(content, retry.brief)
+    stories = normaliseStories((content as unknown as { stories?: unknown }).stories)
+  }
+  if (stories.length === 0) {
+    throw new Error('The narrative call returned no usable stories (each needs a title, what, why and action)')
+  }
+  content.stories = stories
+  deriveFromStories(content)
+
   if (Object.keys(marketSnapshots).length > 0) {
     content.market_snapshots = marketSnapshots
   }
@@ -217,7 +233,9 @@ export async function synthesizeBrief(
   const fillerDropped = dropFillerItems(content)
   const citations = resolveSourceRefs(content, sourceRefs)
   content.citation_stats = citations
-  console.log('[synthesize] citations:', { company: company.name, sources: Object.keys(sourceRefs.byId).length, fillerDropped, ...citations })
+  const storySources = resolveStorySources(content, sourceRefs)
+  const covered = markCoveredItems(content, { companyName: company.name })
+  console.log('[synthesize] citations:', { company: company.name, sources: Object.keys(sourceRefs.byId).length, fillerDropped, ...citations, stories: storySources.stories, storiesWithSources: storySources.withSources, radarItemsCovered: covered })
   if (citations.removed > 0) {
     console.warn(`[synthesize] removed ${citations.removed} source reference(s) that did not match a fetched source`)
   }

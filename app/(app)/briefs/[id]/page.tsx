@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { createClient } from '@supabase/supabase-js'
 import { getSessionCompanyId } from '@/lib/get-company'
 import BriefDashboard from '@/components/brief/BriefDashboard'
+import StoryBrief from '@/components/brief/StoryBrief'
 import BriefGeneratingPoller from '@/components/brief/BriefGeneratingPoller'
 import LateIntelPanel from '@/components/brief/LateIntelPanel'
 import ActionItemsPanel from '@/components/brief/ActionItemsPanel'
@@ -67,6 +68,8 @@ export default async function BriefPage({
   const hasLateIntel = (lateNotes?.length ?? 0) > 0 || (lateDocs?.length ?? 0) > 0
 
   const typedBrief = brief as Brief
+  // Briefs made since stories were introduced; older ones keep the previous layout.
+  const hasStories = (typedBrief.content?.stories?.length ?? 0) > 0
 
   const weekOf = new Date(typedBrief.week_of).toLocaleDateString('en-GB', {
     day: 'numeric',
@@ -101,18 +104,31 @@ export default async function BriefPage({
                 patchSignalCount={patch?.signal_count ?? 0}
               />
             )}
-            <BriefDashboard
-              briefId={id}
-              content={typedBrief.content}
-              weekOf={weekOf}
-              generatedAt={typedBrief.generated_at}
-              companyName={company?.name}
-            />
-            {typedBrief.content.weekly_actions && typedBrief.content.weekly_actions.length > 0 && (
-              <ActionItemsPanel
+            {hasStories ? (
+              <StoryBrief
                 briefId={id}
-                actions={typedBrief.content.weekly_actions}
+                content={typedBrief.content}
+                weekOf={weekOf}
+                generatedAt={typedBrief.generated_at}
+                companyName={company?.name}
               />
+            ) : (
+              <BriefDashboard
+                briefId={id}
+                content={typedBrief.content}
+                weekOf={weekOf}
+                generatedAt={typedBrief.generated_at}
+                companyName={company?.name}
+              />
+            )}
+            {typedBrief.content.weekly_actions && typedBrief.content.weekly_actions.length > 0 && (
+              <div className={hasStories ? 'mx-auto max-w-4xl px-4 sm:px-6' : ''}>
+                <ActionItemsPanel
+                  briefId={id}
+                  actions={typedBrief.content.weekly_actions}
+                  defaultCollapsed={hasStories}
+                />
+              </div>
             )}
           </div>
         )}
