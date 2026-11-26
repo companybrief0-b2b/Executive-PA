@@ -45,8 +45,9 @@ ACTION fields (impact, relevance, cfo_action, cto_action, mitigation, bd_action,
 - Every section: tie signals to this company's specific exposure using approximate language ("a significant market", "roughly a quarter of revenue", "a key supply source") — never state exact percentages
 - Never cite internal company metrics (headcount, employee counts, office sizes) as facts — these change constantly and are not verified. Write the strategic point without the number. Bad: "threatens your 398-employee manufacturing base". Good: "threatens your sole proprietary manufacturing site"
 - Location and headcount data is background context only — it tells you WHAT the company does in each country, not the story. Never lead a sentence, item, or headline with a site location or employee number. Use it silently to judge exposure and relevance, then write about the business impact. The story is always the external event and its consequence, not the internal footprint
-- Scenarios: plausible given this week's signals only — not textbook risk categories
-- Decision framing: the decisions THIS CEO actually faces THIS week. Name each option by its real trade-off, not A/B/C. If the data favours one option, say which and why
+- Stories: the 3–5 events that matter most this week, each told ONCE (see the stories section). A story is one event, never a theme or a category. Two stories must never be about the same event
+- Story downside: plausible given this week's signals only — not textbook risk categories
+- Story decision: only when THIS CEO genuinely faces a choice THIS week. Name each option by its real trade-off, not A/B/C. If the data favours one option, say which in "lean"
 - Severity and probability must be calibrated — if it is a quiet week, reflect that. Not everything is high risk
 - Headline, TLDR, and executive_summary must lead with the most SPECIFIC and MATERIAL development of the week — a named competitor move, a named customer/tenant event, company-specific news, or a concrete regulatory/geopolitical event tied to this company's real exposure. Do NOT lead with a generic macro data point (a commodity price level, a generic interest-rate reading) unless nothing more specific happened this week AND that macro point is genuinely, materially significant for this company specifically — not merely plausible. If a generic macro point was used as the lead last week too, actively look harder for a more specific angle this week rather than defaulting to it again
 - competitor_intelligence: ONLY include a competitor with a CONCRETE news story or announcement from the signals. Do not fabricate. An empty array is preferred over invented items
@@ -67,15 +68,13 @@ SECTION SCOPE — HARD BOUNDARIES:
 - marketing_opportunities: channel/BD opportunities from market gaps, customer signals, or trend shifts. Must NOT reference competitors already covered in competitor_intelligence.
 - market_segmentation: dynamic segment analysis driven by THIS WEEK's signals. Six types: audience (who buys), channel (how they're reached), lifestyle (psychographic values), needs (unmet functional needs), value (price/LTV tier), jobs (jobs-to-be-done outcome). Each segment must explain what makes this company SPECIFICALLY different vs. named competitors, identify the competitive vulnerability or gap, and anchor the insight in a concrete signal from this week's news. Do NOT repeat competitor moves, financial signals, or marketing opportunities already covered in their own sections — this section is about market STRUCTURE and positioning gaps.
 - ma_watch: M&A, funding rounds, IPOs ONLY. Do NOT appear in geopolitical_news or competitor_intelligence.
-- risk_summary: a consolidated risk register — each item must draw from a DIFFERENT source section. Do NOT introduce new facts — just crystallise the top risks already covered.
-- capital_impact: pure financial consequence narrative — no new facts, only synthesise what is already in financial_news and financial_signals.
+- stories: the only place the week's biggest events are told in full. The other sections are a wider radar of shorter items; an event that has a story must not be re-told there as a second analysis.
+- capital_impact: pure financial consequence narrative — no new facts, only synthesise what is already in the stories, financial_news and financial_signals. Do not restate a story; give the financial consequence in numbers and direction.
 - swot: strategic synthesis only — each point must reference its source section. Do NOT introduce new events.
 - pestel: macro-environment synthesis only, drawn from geopolitical_news, financial_news, and financial_signals. Only include a dimension (political/economic/social/technological/environmental/legal) when this week's signals actually support it — omit dimensions with no evidence rather than filling every one. Do NOT introduce new events.
 - five_forces: industry-structure synthesis only, drawn from competitor_intelligence, ma_watch, and market_segmentation. Only assess a force when there is a concrete signal behind it — omit forces with no evidence. If a force's level hasn't materially changed this week, set "change" to "unchanged" rather than forcing a direction. Do NOT introduce new events.
 - hr_intelligence: talent market, hiring trends, workforce signals ONLY. No overlap with operational_intelligence.
 - tech_intelligence: technology product/platform/infrastructure developments ONLY. No overlap with competitor_intelligence.
-- scenario_modeling: forward-looking what-if analysis ONLY. Do NOT describe events already reported in other sections — only their future consequences.
-- decision_framing: current CEO decision points ONLY. Must NOT repeat scenario descriptions from scenario_modeling.
 - internal_intelligence: sourced EXCLUSIVELY from the INTERNAL SIGNALS block (company-provided notes and documents) — never from web/news signals. This is the one section explicitly marked as internally-sourced to the reader, so it must never contain anything that isn't actually present in that block. If the INTERNAL SIGNALS block is empty or absent, return an empty array — do not invent internal data to fill this section. Other sections may still be quietly informed by internal context, but internal_intelligence is the only place it is surfaced and attributed as internal.`
 
 // Shared context block used by both the core-content call and the
@@ -182,14 +181,14 @@ ${signals}
 `
 }
 
-const ITEM_CAP_NOTE = 'HARD CAP: every array-type section below may contain AT MOST 3 items, ranked most-important-first — never more, even if more signals exist. Pick the most consequential items and skip the rest. A short, sharp brief is the goal, not exhaustive coverage.'
+const ITEM_CAP_NOTE = 'HARD CAP: every array-type section below may contain AT MOST 3 items, ranked most-important-first — never more, even if more signals exist. Pick the most consequential items and skip the rest. A short, sharp brief is the goal, not exhaustive coverage. The biggest events of the week are told in full in a separate stories section: here, cover the wider radar with short, factual items and never pad a section to fill it.'
 
 // ── Split into four smaller, focused calls (plus the frameworks call below)
 // that run concurrently — see synthesize.ts. Each call only has to write a
 // few hundred to ~2000 tokens, so wall-clock time is bounded by the slowest
 // of five small calls instead of one call writing the whole brief.
 
-// A. Executive narrative — headline through weekly actions
+// A. Executive narrative — headline, stories and capital impact
 export function buildNarrativeUserPrompt(
   company: Company, profile: CompanyProfile, signals: string,
   language = 'English', locations: CompanyLocation[] = [], previousBriefContext = ''
@@ -199,34 +198,43 @@ export function buildNarrativeUserPrompt(
 ---
 Produce ONLY the executive-narrative sections of the brief as a single JSON object. Return ONLY the JSON — no markdown, no explanation.
 
-${ITEM_CAP_NOTE}
+STORIES — the heart of the brief. Write 3 to 5 stories, ranked most consequential first. Fewer in a quiet week: never pad, and never make a story out of something with no new development since last week.
+- One story = one event (a named competitor move, a named customer event, a regulatory decision, a supply shock). Never a theme, never a category, never the same event twice.
+- Each story is complete on its own: what happened, why it matters to THIS company, what to do, and what it costs if ignored. The reader should not need any other section to act on it.
+- Story 1 is the event the headline is about. Include at least one opportunity if the signals support one.
+- "decision" appears on at most two stories, and only when leadership genuinely faces a choice this week.
+- Write each fact once. The tldr gives the overall verdict across the stories; it must not repeat a story's wording.
 
 {
-  "headline": "8–12 words maximum. A punchy, specific wire-service headline that captures the single dominant theme of this week for this company. Name the actor or event and the stakes. Bad: 'Multiple risks identified across supply chain and competitive landscape'. Good: 'ASML Export Controls Squeeze VPG Sensor Demand at Peak Cycle'. Never vague, never generic.",
+  "headline": "8–12 words maximum. A punchy, specific wire-service headline for story 1: name the actor or event and the stakes. Bad: 'Multiple risks identified across supply chain and competitive landscape'. Good: 'ASML Export Controls Squeeze VPG Sensor Demand at Peak Cycle'. Never vague, never generic.",
   "sector_tags": ["2–4 short topic tags, lowercase, from: macro, markets, competitive, regulatory, technology, talent, capital, geopolitical, supply-chain, consumer, ai, cybersecurity, energy, trade."],
   "region_tags": ["2–3 geographic regions, from: US, EU, UK, APAC, MENA, LatAm, Global."],
   "urgency": "One of: 'act-now' (regulatory deadline, fast-moving competitive event requiring this-week action), 'monitor' (trend developing over 30–90 days), 'awareness' (background context). Be calibrated — not every brief is act-now.",
-  "read_time": 6,
-  "tldr": "One sentence. The absolute bottom line this week. No caveats. Just the verdict.",
-  "executive_summary": "3–4 sentence lede. Lead with the dominant risk or opportunity, then market context, then company-specific implication, then decision pressure. Reference specific figures, competitor names, and market data.",
-  "so_what": "The most important paragraph in the brief. 3–5 sentences. Directly address the CEO: what does this week's intelligence mean RIGHT NOW? Be opinionated. Name the single most important action this week.",
-  "risk_summary": [
-    { "title": "Short risk title", "detail": "One sentence describing the risk", "severity": "low or medium or high", "timeframe": "immediate or near-term or long-term" }
+  "read_time": 4,
+  "tldr": "One sentence, the overall verdict for the week across all stories. No caveats. Do not repeat a story's wording.",
+  "stories": [
+    {
+      "kind": "risk or opportunity or watch",
+      "kicker": "1–2 word topic label, e.g. Competitor, Customer, Regulation, Markets, Supply chain, Technology, People, Capital",
+      "title": "Wire-service headline for THIS event: what happened + who + the direct consequence for this company. 8–14 words.",
+      "what": "1–2 sentences: the fact, the number, the named actor. **Bold** the single most important figure or name.",
+      "why": "1–2 sentences: why this matters to THIS company's revenue, costs, customers or competitive position. Name the exposure in approximate terms.",
+      "action": "The single most useful thing to do about it: specific, owned and time-bound. E.g. 'Call the three largest Sensata accounts by Friday to lock in Q1 volumes' — not 'Review exposure'.",
+      "owner": "CEO or CFO or CMO or CTO or CBPO or VP HR or All",
+      "by_when": "Short deadline, e.g. 'Friday', 'this week', 'before Q1 pricing'",
+      "impact": "high or medium or low — how much this matters to the company",
+      "timeframe": "immediate or near-term or long-term",
+      "decision": { "question": "The specific choice leadership faces", "options": [ { "label": "Short option name", "trade_off": "Its real trade-off in one sentence" } ], "lean": "Which option the evidence favours and why, in one sentence" },
+      "downside": "One sentence: what it costs if nothing is done. Omit for a pure opportunity with no downside.",
+      "downside_likelihood": "low or medium or high",
+      "source_ids": ["Reference ids such as S12 from the [REF: S#] tokens of the signal lines this story rests on. Omit if none carried one. Never write a web address."]
+    }
   ],
   "capital_impact": {
-    "revenue_exposure": "How this week's signals affect revenue outlook. Specific markets and magnitudes.",
+    "revenue_exposure": "How this week's signals affect revenue outlook. Specific markets and magnitudes. Do not restate a story.",
     "margin_pressure": "Cost pressures, pricing dynamics, or currency movements affecting margins.",
     "capex_considerations": "Whether signals argue for accelerating, deferring, or redirecting capital investment."
-  },
-  "decision_framing": [
-    { "question": "The specific decision this CEO faces", "context": "Why it is pressing right now", "options": ["Option A with its real trade-off", "Option B with its real trade-off"] }
-  ],
-  "scenario_modeling": [
-    { "title": "Scenario name", "probability": "low or medium or high", "trigger": "What specific event would cause this to materialise", "impact": "Business consequence", "response": "Concrete preparation action" }
-  ],
-  "weekly_actions": [
-    { "action": "A SMART objective — specific, measurable, time-bound, achievable for this company's actual size. E.g. 'Call Frankfurt sales lead by Friday to quantify Q2 pipeline impact' — not 'Review European exposure'.", "owner": "CEO or CFO or CMO or CTO or CBPO or VP HR or All", "priority": "high or medium or low", "section": "Which topic triggered this action" }
-  ]
+  }
 }`
 }
 

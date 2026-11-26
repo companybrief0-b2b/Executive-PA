@@ -626,7 +626,16 @@ export default function BriefViewer({
   const [roleFilter, setRoleFilter] = useState<Role>('All')
   const [tickerExpanded, setTickerExpanded] = useState(false)
   const [readProgress, setReadProgress] = useState(0)
+  const [showCovered, setShowCovered] = useState(false)
   const accent = brandColor ?? '#111827'
+
+  // Briefs with stories tell each main event once, on the brief page. Here, items that
+  // repeat a story are hidden unless the reader asks for them.
+  const hasStories = (content.stories?.length ?? 0) > 0
+  const coveredTotal = Object.keys(content.story_coverage ?? {}).length
+  const hide = (section: string, i: number) =>
+    hasStories && !showCovered && !!content.story_coverage?.[`${section}:${i}`]
+  const visible = (section: string, list?: unknown[]) => (list ?? []).filter((_, i) => !hide(section, i)).length
 
   useEffect(() => {
     function onScroll() {
@@ -663,17 +672,17 @@ export default function BriefViewer({
       ? [{ id: 'brief-swot',        label: 'SWOT Analysis',            audience: 'CEO',  audienceColor: AUDIENCE_COLORS.CEO }] : []),
     ...(content.pestel               ? [{ id: 'brief-pestel',      label: 'PESTEL',                    audience: 'CEO',  audienceColor: AUDIENCE_COLORS.CEO }] : []),
     ...(content.five_forces?.forces?.length ? [{ id: 'brief-five-forces', label: "Porter's Five Forces",     audience: 'CEO',  audienceColor: AUDIENCE_COLORS.CEO }] : []),
-    ...(content.financial_news?.length       ? [{ id: 'brief-fin-news',    label: 'Financial News',           audience: 'CFO',  audienceColor: AUDIENCE_COLORS.CFO }] : []),
-    ...(content.geopolitical_news?.length    ? [{ id: 'brief-geo',         label: 'Geopolitical Signals',     audience: 'CEO',  audienceColor: AUDIENCE_COLORS.CEO }] : []),
-    ...(content.competitor_intelligence?.length ? [{ id: 'brief-comp',     label: 'Competitor Intelligence',  audience: 'CMO',  audienceColor: AUDIENCE_COLORS.CMO }] : []),
-    ...(content.marketing_opportunities?.length ? [{ id: 'brief-mktg',    label: 'Marketing Opportunities',  audience: 'CMO',  audienceColor: AUDIENCE_COLORS.CMO }] : []),
-    ...(content.financial_signals?.length    ? [{ id: 'brief-fin-signals', label: 'Financial Signals',        audience: 'CFO',  audienceColor: AUDIENCE_COLORS.CFO }] : []),
-    ...(content.operational_intelligence?.length ? [{ id: 'brief-ops',    label: 'Operational Intelligence', audience: 'CBPO', audienceColor: AUDIENCE_COLORS.CBPO }] : []),
-    ...(content.tech_intelligence?.length    ? [{ id: 'brief-tech',        label: 'Tech Intelligence',        audience: 'CTO',  audienceColor: AUDIENCE_COLORS.CTO  }] : []),
-    ...(content.hr_intelligence?.length     ? [{ id: 'brief-hr',          label: 'HR Intelligence',           audience: 'HR',   audienceColor: AUDIENCE_COLORS.HR   }] : []),
-    ...(content.ma_watch?.length            ? [{ id: 'brief-ma',           label: 'M&A Watch',                audience: 'BD',   audienceColor: AUDIENCE_COLORS.BD   }] : []),
-    ...(content.customer_intelligence?.length ? [{ id: 'brief-customers',  label: 'Customer Intelligence',    audience: 'CEO',  audienceColor: AUDIENCE_COLORS.CEO }] : []),
-    ...(content.company_news?.length        ? [{ id: 'brief-company-news', label: 'Company News',             audience: 'CMO',  audienceColor: AUDIENCE_COLORS.CMO }] : []),
+    ...(visible('financial_news', content.financial_news)       ? [{ id: 'brief-fin-news',    label: 'Financial News',           audience: 'CFO',  audienceColor: AUDIENCE_COLORS.CFO }] : []),
+    ...(visible('geopolitical_news', content.geopolitical_news)    ? [{ id: 'brief-geo',         label: 'Geopolitical Signals',     audience: 'CEO',  audienceColor: AUDIENCE_COLORS.CEO }] : []),
+    ...(visible('competitor_intelligence', content.competitor_intelligence) ? [{ id: 'brief-comp',     label: 'Competitor Intelligence',  audience: 'CMO',  audienceColor: AUDIENCE_COLORS.CMO }] : []),
+    ...(visible('marketing_opportunities', content.marketing_opportunities) ? [{ id: 'brief-mktg',    label: 'Marketing Opportunities',  audience: 'CMO',  audienceColor: AUDIENCE_COLORS.CMO }] : []),
+    ...(visible('financial_signals', content.financial_signals)    ? [{ id: 'brief-fin-signals', label: 'Financial Signals',        audience: 'CFO',  audienceColor: AUDIENCE_COLORS.CFO }] : []),
+    ...(visible('operational_intelligence', content.operational_intelligence) ? [{ id: 'brief-ops',    label: 'Operational Intelligence', audience: 'CBPO', audienceColor: AUDIENCE_COLORS.CBPO }] : []),
+    ...(visible('tech_intelligence', content.tech_intelligence)    ? [{ id: 'brief-tech',        label: 'Tech Intelligence',        audience: 'CTO',  audienceColor: AUDIENCE_COLORS.CTO  }] : []),
+    ...(visible('hr_intelligence', content.hr_intelligence)     ? [{ id: 'brief-hr',          label: 'HR Intelligence',           audience: 'HR',   audienceColor: AUDIENCE_COLORS.HR   }] : []),
+    ...(visible('ma_watch', content.ma_watch)            ? [{ id: 'brief-ma',           label: 'M&A Watch',                audience: 'BD',   audienceColor: AUDIENCE_COLORS.BD   }] : []),
+    ...(visible('customer_intelligence', content.customer_intelligence) ? [{ id: 'brief-customers',  label: 'Customer Intelligence',    audience: 'CEO',  audienceColor: AUDIENCE_COLORS.CEO }] : []),
+    ...(visible('company_news', content.company_news)        ? [{ id: 'brief-company-news', label: 'Company News',             audience: 'CMO',  audienceColor: AUDIENCE_COLORS.CMO }] : []),
     ...(content.internal_intelligence?.length ? [{ id: 'brief-internal',   label: 'Internal Intelligence',    audience: 'INTERNAL', audienceColor: AUDIENCE_COLORS.INTERNAL }] : []),
   ]
 
@@ -735,12 +744,25 @@ export default function BriefViewer({
               <span className="text-sm font-semibold text-white">{content.tldr}</span>
             </div>
           )}
-          <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed border-l-2 border-gray-300 dark:border-gray-600 pl-3">
-            <RichText text={content.executive_summary} />
-          </p>
+          {!hasStories && (
+            <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed border-l-2 border-gray-300 dark:border-gray-600 pl-3">
+              <RichText text={content.executive_summary} />
+            </p>
+          )}
+          {hasStories && briefId && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-100 bg-blue-50/60 px-4 py-3 dark:border-blue-800/30 dark:bg-blue-900/10">
+              <p className="min-w-0 flex-1 text-sm leading-relaxed text-gray-700 dark:text-gray-300">
+                The {content.stories?.length} main stories of the week (what happened, why it matters, what to do) are on the brief page.
+                This is the full reference: every other signal, by section.
+              </p>
+              <Link href={`/briefs/${briefId}`} className="shrink-0 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700">
+                Read the stories →
+              </Link>
+            </div>
+          )}
 
           {/* ── So What callout ──────────────────────────────────────── */}
-          {content.so_what && (
+          {!hasStories && content.so_what && (
             <div className="mt-4 rounded-xl border-2 p-4" style={{ borderColor: accent + '40', background: accent + '0a' }}>
               <p className="text-[10px] font-black uppercase tracking-[0.18em] mb-2" style={{ color: accent }}>
                 What this means for you
@@ -805,6 +827,23 @@ export default function BriefViewer({
           ))}
         </div>
 
+        {hasStories && coveredTotal > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+            <span>
+              {showCovered
+                ? `Showing all signals, including ${coveredTotal} already told as stories.`
+                : `${coveredTotal} signal${coveredTotal === 1 ? '' : 's'} hidden because a story already covers ${coveredTotal === 1 ? 'it' : 'them'}.`}
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowCovered(v => !v)}
+              className="font-semibold text-blue-600 hover:underline dark:text-blue-400"
+            >
+              {showCovered ? 'Hide them' : 'Show them'}
+            </button>
+          </div>
+        )}
+
         {/* ── All sections — single full-width column, priority order ─── */}
         <div className="space-y-8">
 
@@ -866,10 +905,10 @@ export default function BriefViewer({
           )}
 
           {/* 1. Competitor Intelligence */}
-          {content.competitor_intelligence?.length > 0 && showSection('CMO') && (
+          {visible('competitor_intelligence', content.competitor_intelligence) > 0 && showSection('CMO') && (
             <BriefSection id="brief-comp" label="Competitor Intelligence" audience="CMO">
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {content.competitor_intelligence.map((item, i) => (
+                {content.competitor_intelligence.map((item, i) => hide('competitor_intelligence', i) ? null : (
                   <div key={i} className="bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all p-4 flex flex-col gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[10px] font-bold uppercase tracking-wide text-gray-400">{item.competitor}</span>
@@ -899,10 +938,10 @@ export default function BriefViewer({
           )}
 
           {/* 3. Geopolitical News */}
-          {content.geopolitical_news?.length > 0 && showSection('CEO') && (
+          {visible('geopolitical_news', content.geopolitical_news) > 0 && showSection('CEO') && (
             <BriefSection id="brief-geo" label="Geopolitical Signals" audience="CEO">
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {content.geopolitical_news.map((item, i) => (
+                {content.geopolitical_news.map((item, i) => hide('geopolitical_news', i) ? null : (
                   <div key={i} className="bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all p-4 flex flex-col gap-2">
                     <CountryLabel name={item.region} />
                     {briefId ? (
@@ -974,10 +1013,10 @@ export default function BriefViewer({
           )}
 
           {/* 4. Financial News */}
-          {content.financial_news?.length > 0 && showSection('CFO') && (
+          {visible('financial_news', content.financial_news) > 0 && showSection('CFO') && (
             <BriefSection id="brief-fin-news" label="Financial News" audience="CFO">
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {content.financial_news.map((item, i) => (
+                {content.financial_news.map((item, i) => hide('financial_news', i) ? null : (
                   <div key={i} className="bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all p-4 flex flex-col gap-2">
                     <CountryLabel name={item.market} />
                     {briefId ? (
@@ -1000,10 +1039,10 @@ export default function BriefViewer({
           )}
 
           {/* 5. Marketing Opportunities */}
-          {content.marketing_opportunities?.length > 0 && showSection('CMO') && (
+          {visible('marketing_opportunities', content.marketing_opportunities) > 0 && showSection('CMO') && (
             <BriefSection id="brief-mktg" label="Marketing Opportunities" audience="CMO">
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {content.marketing_opportunities.map((item: MarketingOpportunityItem, i) => (
+                {content.marketing_opportunities.map((item: MarketingOpportunityItem, i) => hide('marketing_opportunities', i) ? null : (
                   <div key={i} className="bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all p-4 flex flex-col gap-2">
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{item.channel}</span>
@@ -1029,10 +1068,10 @@ export default function BriefViewer({
           )}
 
           {/* 6. Company News */}
-          {content.company_news?.length > 0 && showSection('CMO') && (
+          {visible('company_news', content.company_news) > 0 && showSection('CMO') && (
             <BriefSection id="brief-company-news" label="Company News" audience="CMO">
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {content.company_news.map((item: CompanyNewsItem, i) => (
+                {content.company_news.map((item: CompanyNewsItem, i) => hide('company_news', i) ? null : (
                   <div key={i} className="bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all p-4 flex flex-col gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">{item.category}</span>
@@ -1065,10 +1104,10 @@ export default function BriefViewer({
           )}
 
           {/* 7. M&A Watch */}
-          {content.ma_watch?.length > 0 && showSection('BD') && (
+          {visible('ma_watch', content.ma_watch) > 0 && showSection('BD') && (
             <BriefSection id="brief-ma" label="M&A Watch" audience="BD">
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {content.ma_watch.map((item: MAItem, i) => (
+                {content.ma_watch.map((item: MAItem, i) => hide('ma_watch', i) ? null : (
                   <div key={i} className="bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all p-4 flex flex-col gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide ${
@@ -1112,7 +1151,7 @@ export default function BriefViewer({
           )}
 
           {/* 8. Financial Signals */}
-          {content.financial_signals?.length > 0 && showSection('CFO') && (
+          {visible('financial_signals', content.financial_signals) > 0 && showSection('CFO') && (
             <BriefSection id="brief-fin-signals" label="Financial Signals" audience="CFO">
               {/* Charts for first 2 signals — prefer live data */}
               <div className="flex gap-4 mb-4 overflow-x-auto pb-1">
@@ -1123,7 +1162,7 @@ export default function BriefViewer({
                 })}
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {content.financial_signals.map((item: FinancialSignalItem, i) => (
+                {content.financial_signals.map((item: FinancialSignalItem, i) => hide('financial_signals', i) ? null : (
                   <div key={i} className="bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all p-4 flex flex-col gap-2">
                     <div className="text-[10px] font-bold uppercase tracking-wide text-gray-400">{item.category}</div>
                     {briefId ? (
@@ -1144,10 +1183,10 @@ export default function BriefViewer({
           )}
 
           {/* 9. Operational Intelligence */}
-          {content.operational_intelligence?.length > 0 && showSection('CBPO') && (
+          {visible('operational_intelligence', content.operational_intelligence) > 0 && showSection('CBPO') && (
             <BriefSection id="brief-ops" label="Operational Intelligence" audience="CBPO">
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {content.operational_intelligence.map((item: OperationalAlert, i) => (
+                {content.operational_intelligence.map((item: OperationalAlert, i) => hide('operational_intelligence', i) ? null : (
                   <div key={i} className="bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all p-4 flex flex-col gap-2">
                     <div className="text-[10px] font-bold uppercase tracking-wide text-gray-400">{item.area}</div>
                     {briefId ? (
@@ -1168,10 +1207,10 @@ export default function BriefViewer({
           )}
 
           {/* 11. Tech Intelligence */}
-          {content.tech_intelligence?.length > 0 && showSection('CTO') && (
+          {visible('tech_intelligence', content.tech_intelligence) > 0 && showSection('CTO') && (
             <BriefSection id="brief-tech" label="Tech Intelligence" audience="CTO">
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {content.tech_intelligence.map((item: TechIntelItem, i) => (
+                {content.tech_intelligence.map((item: TechIntelItem, i) => hide('tech_intelligence', i) ? null : (
                   <div key={i} className="bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all p-4 flex flex-col gap-2">
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{item.category}</span>
@@ -1203,10 +1242,10 @@ export default function BriefViewer({
           )}
 
           {/* 12. HR Intelligence */}
-          {content.hr_intelligence?.length > 0 && showSection('HR') && (
+          {visible('hr_intelligence', content.hr_intelligence) > 0 && showSection('HR') && (
             <BriefSection id="brief-hr" label="HR Intelligence" audience="HR">
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {content.hr_intelligence.map((item: HRIntelItem, i) => (
+                {content.hr_intelligence.map((item: HRIntelItem, i) => hide('hr_intelligence', i) ? null : (
                   <div key={i} className="bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all p-4 flex flex-col gap-2">
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{item.category}</span>
@@ -1239,10 +1278,10 @@ export default function BriefViewer({
           )}
 
           {/* 13. Customer Intelligence */}
-          {content.customer_intelligence?.length > 0 && showSection('CEO') && (
+          {visible('customer_intelligence', content.customer_intelligence) > 0 && showSection('CEO') && (
             <BriefSection id="brief-customers" label="Customer Intelligence" audience="CEO">
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {content.customer_intelligence.map((item: CustomerIntelItem, i) => (
+                {content.customer_intelligence.map((item: CustomerIntelItem, i) => hide('customer_intelligence', i) ? null : (
                   <div key={i} className="bg-white rounded-xl border border-gray-200 hover:border-gray-300 hover:shadow-md transition-all p-4 flex flex-col gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
